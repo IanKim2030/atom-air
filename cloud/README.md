@@ -2,7 +2,7 @@
 
 ```
 Browser  <--/ws/live?store_id=S001-->  Cloud (FastAPI)  <--/ws/gateway/{id}-->  Store PC
- index.html                             cloud.db (WAL)                          gateway_service.py
+ index.html                             cloud.db (WAL)                          atomair-gateway.exe (Go)
  Tailwind + Chart.js                                                            Mosquitto -> Atom Lite
 ```
 
@@ -17,9 +17,12 @@ pip install -r ../requirements.txt
 # terminal 1 — cloud
 python -m uvicorn cloud.cloud_server:app --host 127.0.0.1 --port 8000   # from the repo root
 
-# terminal 2 — store gateway (--simulate needs no hardware or broker)
-python gateway/gateway_service.py --store-id S001 --simulate --devices 2
+# terminal 2 — store gateway (Go; --simulate needs no hardware or broker)
+cd gateway && go build -o atomair-gateway.exe . && ./atomair-gateway.exe --store-id S001 --simulate
 ```
+
+The gateway is a separate Go binary that installs as a Windows service on the
+store PC — see [gateway/README.md](../gateway/README.md).
 
 Open <http://127.0.0.1:8000/?store_id=S001>. `?tab=control|stats|settings` deep-links a
 mobile tab; desktop shows every panel at once.
@@ -35,8 +38,9 @@ The cloud counts viewers per store:
 | last viewer leaves | `STOP_LIVE_STREAM` | back to normal mode: 1-minute stats only |
 | gateway reconnects with viewers waiting | `START_LIVE_STREAM` re-issued | resumes with no user action |
 
-Local SQLite writes, 1-minute downsampling and the licence check run in their own asyncio
-tasks and are **never** gated on the stream or on the cloud being reachable.
+Local SQLite writes, 1-minute downsampling and the licence check run in their own
+goroutines on the gateway and are **never** gated on the stream or on the cloud being
+reachable.
 
 ## Endpoints
 
@@ -63,7 +67,8 @@ tasks and are **never** gated on the stream or on the cloud being reachable.
 
 `grace_period_days` (default 30, per-store, operator-tunable) is the **offline allowance**:
 how long the gateway may keep running past its last successful check. The gateway caches it
-in `gateway/store_license_config.json`, so it survives restarts and cloud outages.
+in `%ProgramData%\AtomAir\store_license_config.json`, so it survives restarts and cloud
+outages.
 
 | store state | result |
 |---|---|
@@ -77,9 +82,17 @@ The response is always HTTP 200 — the gateway must read the grace terms even w
 
 ## Wire protocol
 
-Defined once in [`common/protocol.py`](../common/protocol.py) and imported by both sides, so
-the formats cannot drift. Checksum is an **XOR of all preceding bytes** (sensor: bytes 0–10;
-AC: bytes 0–5).
+Checksum is an **XOR of all preceding bytes** (sensor: bytes 0–10; AC: bytes 0–5).
+
+The cloud implements the formats in [`common/protocol.py`](../common/protocol.py); the Go
+gateway implements them in `gateway/protocol/`. Both assert against the shared vectors in
+[`common/protocol_vectors.json`](../common/protocol_vectors.json), so the two implementations
+cannot drift:
+
+```bash
+python -m unittest discover -s common       # cloud side
+cd gateway && go test ./...                 # gateway side
+```
 
 ## Configuration
 

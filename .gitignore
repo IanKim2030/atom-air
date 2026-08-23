@@ -1,8 +1,13 @@
 # runtime artefacts
 cloud/cloud.db*
-gateway/store_data.db*
-gateway/store_license_config.json
-gateway/firmware/
+gateway/*.exe
+gateway/*.exe~
+
+# the gateway service writes its state to %ProgramData%\AtomAir, not the repo
+store_data.db*
+store_license_config.json
+firmware/
+logs/
 
 __pycache__/
 *.py[cod]
