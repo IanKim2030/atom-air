@@ -24,10 +24,9 @@
     --axis:        #c3c2b7;
     --border:      rgba(11,11,11,.10);
     --shadow:      0 1px 2px rgba(11,11,11,.05), 0 8px 24px rgba(11,11,11,.04);
-    /* categorical slots 1-3 (validated all-pairs, light surface) */
+    /* categorical slots 1-2 (validated all-pairs, light surface) */
     --series-hum:   #2a78d6;   /* slot 1 blue   */
     --series-temp:  #eb6834;   /* slot 2 orange */
-    --series-light: #1baf7a;   /* slot 3 aqua   */
     --series-temp-wash:  rgba(235,104,52,.10);
     --series-hum-wash:   rgba(42,120,214,.10);
     /* status (fixed, never themed) */
@@ -51,7 +50,6 @@
       --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
       --series-hum:   #3987e5;
       --series-temp:  #d95926;
-      --series-light: #199e70;
       --series-temp-wash: rgba(217,89,38,.14);
       --series-hum-wash:  rgba(57,135,229,.14);
       --ui-accent: #ffffff;
@@ -72,7 +70,6 @@
     --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
     --series-hum:   #3987e5;
     --series-temp:  #d95926;
-    --series-light: #199e70;
     --series-temp-wash: rgba(217,89,38,.14);
     --series-hum-wash:  rgba(57,135,229,.14);
     --ui-accent: #ffffff;
@@ -169,14 +166,17 @@
     <div class="card p-4">
       <div class="flex items-baseline justify-between mb-3">
         <h2 class="text-sm font-semibold">실시간 환경</h2>
-        <span class="text-xs ink3">1초 주기 · <span id="lastSeen">수신 없음</span></span>
+        <span class="text-xs ink3 truncate"><span id="devInfo">dev — · seq —</span>
+          · <span id="lastSeen">수신 없음</span></span>
       </div>
 
       <!-- Populated only when the store reports more than one device. -->
       <div id="devChips" class="flex flex-wrap gap-1.5 mb-3" role="group"
            aria-label="디바이스 선택"></div>
 
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <!-- Capped and centred: with the third tile gone, two gauges spread
+           across the full card width read as sparse. -->
+      <div class="grid grid-cols-2 gap-4 mx-auto max-w-[420px]">
         <!-- temperature gauge -->
         <div class="flex flex-col items-center">
           <div class="relative w-full max-w-[150px]">
@@ -221,19 +221,6 @@
           </p>
         </div>
 
-        <!-- illuminance stat tile (one number: a tile, not a chart) -->
-        <div class="col-span-2 sm:col-span-1 rounded-xl p-3 flex sm:flex-col items-center
-                    sm:items-start justify-between sm:justify-center gap-1"
-             style="background:var(--surface-2)">
-          <p class="text-xs ink2 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full" style="background:var(--series-light)"></span>조도
-          </p>
-          <div class="flex items-baseline gap-1">
-            <span id="lightVal" class="text-2xl font-semibold tnum ink">--</span>
-            <span class="text-xs ink3">lux</span>
-          </div>
-          <p id="devInfo" class="text-[11px] ink3 tnum">dev — · seq —</p>
-        </div>
       </div>
     </div>
 
@@ -302,7 +289,6 @@
               <th class="py-2 pr-3 font-medium">최저</th>
               <th class="py-2 pr-3 font-medium">최고</th>
               <th class="py-2 pr-3 font-medium">습도 평균</th>
-              <th class="py-2 pr-3 font-medium">조도</th>
               <th class="py-2 font-medium">표본</th>
             </tr>
           </thead>
@@ -822,7 +808,6 @@ function pushLive(reading) {
 
   setGauge("gTempArc", "gTempVal", reading.temp, 10, 40, 1);
   setGauge("gHumArc", "gHumVal", reading.hum, 0, 100, 0);
-  $("lightVal").textContent = Math.round(reading.light).toLocaleString("ko-KR");
   $("liveTempNow").textContent = reading.temp.toFixed(1) + " °C";
   $("liveHumNow").textContent = reading.hum.toFixed(1) + " %";
   $("devInfo").textContent = `dev ${reading.dev_id} · seq ${reading.seq}`;
@@ -894,11 +879,10 @@ function renderStats() {
       <td class="py-1.5 pr-3">${p.temp_min.toFixed(2)}</td>
       <td class="py-1.5 pr-3">${p.temp_max.toFixed(2)}</td>
       <td class="py-1.5 pr-3">${p.hum_avg.toFixed(2)}</td>
-      <td class="py-1.5 pr-3">${Math.round(p.light_avg || 0)}</td>
       <td class="py-1.5">${p.sample_count || 0}</td>
     </tr>`).join("");
   $("tableBody").innerHTML = rows ||
-    `<tr><td colspan="7" class="py-4 text-center ink3">데이터 없음</td></tr>`;
+    `<tr><td colspan="6" class="py-4 text-center ink3">데이터 없음</td></tr>`;
 }
 
 document.querySelectorAll("[data-range]").forEach((btn) => {
