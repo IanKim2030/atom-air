@@ -13,3 +13,6 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# mock stack state (tools/run_mock.py)
+.mockdata/

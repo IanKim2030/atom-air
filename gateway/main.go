@@ -50,6 +50,7 @@ type Config struct {
 	OTAHost         string
 	OTAPort         int
 	Simulate        bool
+	NoMQTT          bool
 	Devices         int
 }
 
@@ -112,6 +113,8 @@ func parseConfig(args []string) (Config, error) {
 	fs.IntVar(&c.OTAPort, "ota-port", 8080, "local HTTP OTA port")
 	fs.BoolVar(&c.Simulate, "simulate", false,
 		"generate Atom Lite traffic locally (no hardware or broker needed)")
+	fs.BoolVar(&c.NoMQTT, "no-mqtt", false,
+		"do not connect to a broker at all; only meaningful with --simulate")
 	fs.IntVar(&c.Devices, "devices", 2, "simulated device count")
 
 	if err := fs.Parse(args); err != nil {

@@ -118,9 +118,16 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	defer s.ota.Stop()
 
-	s.mqtt = NewMQTTBridge(s.cfg.MQTTHost, s.cfg.MQTTPort, s.cfg.StoreID, s.onFrame)
-	s.mqtt.Start()
-	defer s.mqtt.Stop()
+	if s.cfg.NoMQTT {
+		// Deliberately no broker. Without this, a simulator run on a machine
+		// that happens to have Mosquitto up would mix synthetic frames with
+		// whatever real devices are publishing.
+		slog.Info("MQTT disabled (--no-mqtt); no broker will be contacted")
+	} else {
+		s.mqtt = NewMQTTBridge(s.cfg.MQTTHost, s.cfg.MQTTPort, s.cfg.StoreID, s.onFrame)
+		s.mqtt.Start()
+		defer s.mqtt.Stop()
+	}
 	if s.cfg.Simulate {
 		slog.Info("simulator enabled: synthesising Atom traffic locally",
 			"devices", s.cfg.Devices)
