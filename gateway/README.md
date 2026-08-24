@@ -41,6 +41,34 @@ No C toolchain required.
 the MQTT bridge uses, so everything downstream is exercised for real without
 hardware or a broker.
 
+## Testing against a real broker, without hardware
+
+`--simulate` bypasses MQTT entirely. To exercise the real path — Mosquitto, the
+topics, the 8-byte control frames and a genuine OTA download — run the gateway
+**without** `--simulate` and put a fake device on the broker:
+
+```bash
+# Mosquitto listening on 1883, then:
+./atomair-gateway.exe --store-id S001            # no --simulate
+python ../tools/fake_atom.py --store-id S001 --devices 2
+```
+
+[`tools/fake_atom.py`](../tools/fake_atom.py) is the executable specification of
+what the ESP32 firmware must do:
+
+| | |
+|---|---|
+| publishes | `atom/{store}/sensor` — 12-byte `SensorPacket`, 1 Hz |
+| subscribes | `atom/{store}/ac/{dev_id}` — 8-byte AC control frame |
+| subscribes | `atom/{store}/ota/{dev_id}` — JSON OTA command |
+
+It applies the AC setpoint (so the reported temperature really drifts toward it),
+and on an OTA command it **downloads the firmware over HTTP and then raises
+`FLAG_IR_READY`** — which is what makes the gateway's SOTA `verify` stage pass
+for real rather than by simulation. Put a `.bin` in
+`<data-dir>\firmware\atom_ac_<protocol>.bin` first; without `--simulate` the
+gateway fails the deploy loudly rather than inventing a stub.
+
 ## Install as a Windows service
 
 From an **Administrator** prompt:

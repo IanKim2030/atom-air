@@ -1,3 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 websockets>=12.0
+
+# tools/fake_atom.py only
+paho-mqtt>=1.6
