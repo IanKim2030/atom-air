@@ -99,7 +99,6 @@
   }
 
   /* Chart containers are sized to include the x-axis band, never cropping it. */
-  .plot { position: relative; height: 168px; }
   .plot-tall { position: relative; height: 208px; }
 
   /* The default surface lives on the class, not inline — an inline background
@@ -111,9 +110,18 @@
   .navbtn[aria-current="page"] { color: var(--text-primary); }
   .navbtn[aria-current="page"] .navdot { opacity: 1; }
 
-  .gauge-arc { transition: stroke-dashoffset .55s cubic-bezier(.22,.61,.36,1); }
+  /* Name and location edit in place: they look like text until focused. */
+  .inline-edit { background: transparent; border: 1px solid transparent;
+                 border-radius: 6px; padding: 1px 4px; margin-left: -4px;
+                 min-width: 0; width: 100%; }
+  .inline-edit:hover { border-color: var(--border); }
+  .inline-edit:focus { outline: none; background: var(--surface-2);
+                       border-color: var(--ui-accent); }
+  .inline-edit::placeholder { color: var(--muted); }
 
-  input[type="range"] { accent-color: var(--ui-accent); }
+  .devcard[data-online="false"] { opacity: .62; }
+  .devcard[data-online="false"] .needs-online { pointer-events: none; opacity: .5; }
+
   select { background: var(--surface-2); color: var(--text-primary); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--axis); border-radius: 8px; }
@@ -137,7 +145,8 @@
         </span>
       </div>
       <p class="text-xs ink3 mt-0.5 truncate">
-        <span id="storeId">—</span> · <span id="serverClock" class="tnum">—</span>
+        <span id="storeId">—</span> · <span id="headDevices">— 대</span>
+        · <span id="serverClock" class="tnum">—</span>
       </p>
     </div>
 
@@ -159,89 +168,100 @@
 
 <main class="mx-auto max-w-7xl px-4 pt-4 pb-28 md:pb-8 md:flex md:gap-5 md:items-start">
   <div class="col md:flex-1 md:min-w-0">
-  <!-- ══ 실시간 ═══════════════════════════════════════════════════════ -->
-  <section id="panel-live" class="panel is-active space-y-4">
 
-    <!-- gauges + illuminance tile -->
+  <!-- ══ 기기 ═════════════════════════════════════════════════════════ -->
+  <section id="panel-devices" class="panel is-active space-y-4">
+
+    <!-- store summary -->
     <div class="card p-4">
-      <div class="flex items-baseline justify-between mb-3">
-        <h2 class="text-sm font-semibold">실시간 환경</h2>
-        <span class="text-xs ink3 truncate"><span id="devInfo">dev — · seq —</span>
-          · <span id="lastSeen">수신 없음</span></span>
+      <div class="flex items-baseline justify-between mb-1">
+        <h2 class="text-sm font-semibold">매장 요약</h2>
+        <span id="sumMeta" class="text-xs ink3">수신 대기 중</span>
       </div>
 
-      <!-- Populated only when the store reports more than one device. -->
-      <div id="devChips" class="flex flex-wrap gap-1.5 mb-3" role="group"
-           aria-label="디바이스 선택"></div>
+      <div class="text-center py-3">
+        <div class="flex items-start justify-center">
+          <span id="sumAvg" class="text-5xl font-semibold tnum leading-none">--</span>
+          <span class="text-lg ink3 mt-1">°C</span>
+        </div>
+        <p class="text-xs ink3 mt-1.5">평균 실내온도</p>
+      </div>
 
-      <!-- Capped and centred: with the third tile gone, two gauges spread
-           across the full card width read as sparse. -->
-      <div class="grid grid-cols-2 gap-4 mx-auto max-w-[420px]">
-        <!-- temperature gauge -->
-        <div class="flex flex-col items-center">
-          <div class="relative w-full max-w-[150px]">
-            <svg viewBox="0 0 120 120" class="w-full h-auto" role="img"
-                 aria-labelledby="gTempTitle">
-              <title id="gTempTitle">실내온도 게이지</title>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="var(--grid)" stroke-width="9"/>
-              <circle id="gTempArc" class="gauge-arc" cx="60" cy="60" r="52" fill="none"
-                      stroke="var(--series-temp)" stroke-width="9" stroke-linecap="round"
-                      transform="rotate(-90 60 60)"
-                      stroke-dasharray="326.73" stroke-dashoffset="326.73"/>
-            </svg>
-            <div class="absolute inset-0 flex flex-col items-center justify-center">
-              <div id="gTempVal" class="text-[28px] leading-none font-semibold tnum ink">--</div>
-              <div class="text-[11px] ink3 mt-1">°C</div>
-            </div>
-          </div>
-          <p class="mt-2 text-xs ink2 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full" style="background:var(--series-temp)"></span>실내온도
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="rounded-xl py-2" style="background:var(--surface-2)">
+          <p class="text-[11px] ink3">최저</p>
+          <p id="sumMin" class="text-base font-medium tnum">--</p>
+        </div>
+        <div class="rounded-xl py-2" style="background:var(--surface-2)">
+          <p class="text-[11px] ink3">최고</p>
+          <p id="sumMax" class="text-base font-medium tnum">--</p>
+        </div>
+        <div class="rounded-xl py-2" style="background:var(--surface-2)">
+          <p class="text-[11px] ink3">가동 중</p>
+          <p class="text-base font-medium tnum">
+            <span id="sumOn">0</span><span class="ink3 text-xs"> / <span id="sumTotal">0</span></span>
           </p>
         </div>
+      </div>
 
-        <!-- humidity gauge -->
-        <div class="flex flex-col items-center">
-          <div class="relative w-full max-w-[150px]">
-            <svg viewBox="0 0 120 120" class="w-full h-auto" role="img"
-                 aria-labelledby="gHumTitle">
-              <title id="gHumTitle">습도 게이지</title>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="var(--grid)" stroke-width="9"/>
-              <circle id="gHumArc" class="gauge-arc" cx="60" cy="60" r="52" fill="none"
-                      stroke="var(--series-hum)" stroke-width="9" stroke-linecap="round"
-                      transform="rotate(-90 60 60)"
-                      stroke-dasharray="326.73" stroke-dashoffset="326.73"/>
-            </svg>
-            <div class="absolute inset-0 flex flex-col items-center justify-center">
-              <div id="gHumVal" class="text-[28px] leading-none font-semibold tnum ink">--</div>
-              <div class="text-[11px] ink3 mt-1">%</div>
+      <!-- bulk control: temperature and power only -->
+      <div class="mt-4 pt-4 border-t hair">
+        <p class="text-xs ink2 mb-2">전체 제어</p>
+        <button id="bulkPower"
+                class="w-full rounded-xl py-3 text-sm font-semibold border hair seg">
+          전체 켜기
+        </button>
+        <div class="mt-2 flex items-center justify-between gap-3 rounded-xl p-2.5"
+             style="background:var(--surface-2)">
+          <button id="bulkDown" aria-label="전체 희망온도 낮춤"
+                  class="w-11 h-11 rounded-full border hair grid place-items-center text-xl
+                         font-light active:scale-95 transition"
+                  style="background:var(--surface-1)">−</button>
+          <div class="text-center">
+            <div class="flex items-start justify-center">
+              <span id="bulkTemp" class="text-3xl font-semibold tnum leading-none">24</span>
+              <span class="text-sm ink3">°C</span>
             </div>
+            <p id="bulkTempLabel" class="text-[11px] ink3 mt-0.5">전체 희망온도</p>
           </div>
-          <p class="mt-2 text-xs ink2 flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full" style="background:var(--series-hum)"></span>습도
-          </p>
+          <button id="bulkUp" aria-label="전체 희망온도 높임"
+                  class="w-11 h-11 rounded-full border hair grid place-items-center text-xl
+                         font-light active:scale-95 transition"
+                  style="background:var(--surface-1)">+</button>
         </div>
-
       </div>
     </div>
 
-    <!-- live 1-second charts: small multiples, one series each, never a dual axis -->
-    <div class="card p-4">
-      <div class="flex items-baseline justify-between">
-        <h2 class="text-sm font-semibold">실내온도 · 실시간 1초</h2>
-        <span id="liveTempNow" class="text-xs ink2 tnum">--</span>
+    <!-- search + filters -->
+    <div class="space-y-2">
+      <div class="relative">
+        <svg class="absolute left-3 top-1/2 -translate-y-1/2" width="15" height="15"
+             viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2"
+             stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+        </svg>
+        <input id="search" type="search" autocomplete="off"
+               placeholder="이름 · 모델 · 위치 검색"
+               class="w-full rounded-xl border hair pl-9 pr-3 py-2.5 text-sm"
+               style="background:var(--surface-1)">
       </div>
-      <p class="text-xs ink3 mt-0.5 mb-2">최근 2분</p>
-      <div class="plot"><canvas id="liveTempChart"></canvas></div>
+      <div class="flex gap-1.5 overflow-x-auto pb-0.5" role="group" aria-label="필터">
+        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
+                data-filter="all" aria-pressed="true">전체</button>
+        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
+                data-filter="on" aria-pressed="false">가동중</button>
+        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
+                data-filter="off" aria-pressed="false">꺼짐</button>
+        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
+                data-filter="offline" aria-pressed="false">오프라인</button>
+      </div>
     </div>
 
-    <div class="card p-4">
-      <div class="flex items-baseline justify-between">
-        <h2 class="text-sm font-semibold">습도 · 실시간 1초</h2>
-        <span id="liveHumNow" class="text-xs ink2 tnum">--</span>
-      </div>
-      <p class="text-xs ink3 mt-0.5 mb-2">최근 2분</p>
-      <div class="plot"><canvas id="liveHumChart"></canvas></div>
-    </div>
+    <!-- device grid -->
+    <div id="deviceGrid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+    <p id="gridEmpty" class="text-xs ink3 text-center py-8">
+      디바이스를 기다리는 중입니다.
+    </p>
   </section>
 
   <!-- ══ 통계 ═════════════════════════════════════════════════════════ -->
@@ -254,14 +274,11 @@
         </div>
         <div class="flex items-center gap-1.5">
           <div class="flex rounded-lg border hair overflow-hidden" role="group" aria-label="기간">
-            <button class="seg px-2.5 py-1 text-xs" data-range="60" aria-pressed="false"
-                   >1시간</button>
-            <button class="seg px-2.5 py-1 text-xs" data-range="180" aria-pressed="true"
-                   >3시간</button>
-            <button class="seg px-2.5 py-1 text-xs" data-range="720" aria-pressed="false"
-                   >12시간</button>
+            <button class="seg px-2.5 py-1 text-xs" data-range="60" aria-pressed="false">1시간</button>
+            <button class="seg px-2.5 py-1 text-xs" data-range="180" aria-pressed="true">3시간</button>
+            <button class="seg px-2.5 py-1 text-xs" data-range="720" aria-pressed="false">12시간</button>
           </div>
-          <button id="tableBtn" class="rounded-lg border hair px-2.5 py-1 text-xs"
+          <button id="tableBtn" class="seg rounded-lg border hair px-2.5 py-1 text-xs"
                   aria-pressed="false">표</button>
         </div>
       </div>
@@ -299,95 +316,7 @@
   </section>
   </div>
 
-  <div class="col md:w-[380px] md:shrink-0">
-  <!-- ══ 제어 ═════════════════════════════════════════════════════════ -->
-  <section id="panel-control" class="panel space-y-4">
-    <div class="card p-4">
-      <div class="flex items-baseline justify-between mb-4">
-        <h2 class="text-sm font-semibold">에어컨 제어</h2>
-        <span id="acUpdated" class="text-xs ink3">—</span>
-      </div>
-
-      <!-- power -->
-      <button id="powerBtn"
-              class="w-full rounded-2xl py-4 px-4 flex items-center justify-between border hair seg"
-              aria-pressed="false">
-        <span class="flex items-center gap-3">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>
-          </svg>
-          <span class="text-base font-semibold">전원</span>
-        </span>
-        <span id="powerState" class="text-sm font-medium">꺼짐</span>
-      </button>
-
-      <!-- target temperature -->
-      <div class="mt-4 rounded-2xl p-4 border hair" style="background:var(--surface-2)">
-        <p class="text-xs ink2 mb-2">희망온도</p>
-        <div class="flex items-center justify-between gap-3">
-          <button id="tempDown" aria-label="희망온도 낮춤"
-                  class="w-14 h-14 rounded-full border hair grid place-items-center text-2xl
-                         font-light active:scale-95 transition"
-                  style="background:var(--surface-1)">−</button>
-          <div class="text-center">
-            <div class="flex items-start justify-center">
-              <span id="tempVal" class="text-5xl font-semibold tnum leading-none">24</span>
-              <span class="text-lg ink3 mt-1">°C</span>
-            </div>
-            <p class="text-[11px] ink3 mt-1">16 – 30</p>
-          </div>
-          <button id="tempUp" aria-label="희망온도 높임"
-                  class="w-14 h-14 rounded-full border hair grid place-items-center text-2xl
-                         font-light active:scale-95 transition"
-                  style="background:var(--surface-1)">+</button>
-        </div>
-      </div>
-
-      <!-- mode -->
-      <p class="text-xs ink2 mt-4 mb-2">운전 모드</p>
-      <div id="modeGroup" class="grid grid-cols-5 gap-1.5" role="group" aria-label="운전 모드">
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-mode="cool"
-                aria-pressed="false">냉방</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-mode="heat"
-                aria-pressed="false">난방</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-mode="dry"
-                aria-pressed="false">제습</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-mode="fan"
-                aria-pressed="false">송풍</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-mode="auto"
-                aria-pressed="false">자동</button>
-      </div>
-
-      <!-- fan -->
-      <p class="text-xs ink2 mt-4 mb-2">바람세기</p>
-      <div id="fanGroup" class="grid grid-cols-4 gap-1.5" role="group" aria-label="바람세기">
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-fan="auto"
-                aria-pressed="false">자동</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-fan="low"
-                aria-pressed="false">약</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-fan="mid"
-                aria-pressed="false">중</button>
-        <button class="seg rounded-xl border hair py-2.5 text-xs font-medium" data-fan="high"
-                aria-pressed="false">강</button>
-      </div>
-
-      <button id="sotaBtn"
-              class="mt-4 w-full rounded-xl py-3 text-sm font-medium border hair
-                     flex items-center justify-center gap-2"
-              style="background:var(--surface-2)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>
-        </svg>
-        에어컨 모델 선택 · 펌웨어 배포
-      </button>
-      <p class="text-[11px] ink3 mt-2 text-center">
-        IR 제어를 쓰려면 매장 PC에서 SOTA 배포를 먼저 완료해야 합니다.
-      </p>
-    </div>
-  </section>
-
+  <div class="col md:w-[340px] md:shrink-0">
   <!-- ══ 설정 ═════════════════════════════════════════════════════════ -->
   <section id="panel-settings" class="panel space-y-4">
     <div class="card p-4">
@@ -440,21 +369,14 @@
 <!-- ══ bottom nav (mobile only) ═══════════════════════════════════════ -->
 <nav class="md:hidden fixed bottom-0 inset-x-0 z-30 border-t hair"
      style="background:var(--surface-1); padding-bottom:env(safe-area-inset-bottom)">
-  <div class="grid grid-cols-4">
-    <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="live"
+  <div class="grid grid-cols-3">
+    <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="devices"
             aria-current="page">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M3 13h4l3 7 4-16 3 9h4"/></svg>
-      <span class="text-[11px]">실시간</span>
-      <span class="navdot w-1 h-1 rounded-full opacity-0" style="background:var(--text-primary)"></span>
-    </button>
-    <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="control">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" aria-hidden="true">
-        <rect x="4" y="2" width="16" height="20" rx="4"/><path d="M12 6v4"/>
-        <circle cx="12" cy="15" r="2"/></svg>
-      <span class="text-[11px]">제어</span>
+        <rect x="3" y="4" width="8" height="7" rx="2"/><rect x="13" y="4" width="8" height="7" rx="2"/>
+        <rect x="3" y="13" width="8" height="7" rx="2"/><rect x="13" y="13" width="8" height="7" rx="2"/></svg>
+      <span class="text-[11px]">기기</span>
       <span class="navdot w-1 h-1 rounded-full opacity-0" style="background:var(--text-primary)"></span>
     </button>
     <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="stats">
@@ -484,7 +406,8 @@
       <div>
         <h2 id="sotaTitle" class="text-base font-semibold">에어컨 모델 선택</h2>
         <p class="text-xs ink3 mt-1">
-          모델을 고르면 매장 PC가 로컬 HTTP OTA로 IR 제어 펌웨어를 배포합니다 (약 5초).
+          <span id="sotaTargetName" class="ink2 font-medium">—</span>에 로컬 HTTP OTA로
+          IR 제어 펌웨어를 배포합니다 (약 5초).
         </p>
       </div>
       <button id="sotaClose" class="rounded-full p-1.5 border hair" aria-label="닫기">
@@ -502,12 +425,6 @@
       <label class="block">
         <span class="text-xs ink2">모델</span>
         <select id="modelSel" class="mt-1 w-full rounded-xl border hair px-3 py-2.5 text-sm"></select>
-      </label>
-      <label class="block">
-        <span class="text-xs ink2">대상 디바이스 ID</span>
-        <input id="targetSel" type="number" min="1" max="255" value="1"
-               class="mt-1 w-full rounded-xl border hair px-3 py-2.5 text-sm tnum"
-               style="background:var(--surface-2)">
       </label>
     </div>
 
@@ -538,24 +455,27 @@
 "use strict";
 
 const STORE_ID = new URLSearchParams(location.search).get("store_id") || "S001";
-const MAX_LIVE_POINTS = 120;          // ~2 minutes at 1Hz
 const MODE_LABEL = { cool:"냉방", heat:"난방", dry:"제습", fan:"송풍", auto:"자동" };
 const FAN_LABEL  = { auto:"자동", low:"약", mid:"중", high:"강" };
 
 const state = {
   ws: null, retry: 0, reconnectTimer: null, pingTimer: null,
   gatewayOnline: false, liveActive: false, packets: 0,
-  devices: new Set(), activeDev: null,
-  ac: { target_id:1, power:0, mode:"cool", temp:24, fan:"auto" },
-  statsMinutes: 180,
-  stats: [],
+  staleMs: 15000,
+  devices: new Map(),   // dev_id -> {dev_id, name, location, brand, model, ac, reading, ts}
+  cards: new Map(),     // dev_id -> cached element references
+  visible: [],          // dev_ids currently in the grid, in order
+  query: "", filter: "all",
+  bulkTemp: 24, bulkMixed: false, bulkTouchedUntil: 0,
+  sotaTarget: 1,
   catalog: [],
-  suppressUntil: 0,     // ignore echoes right after a local edit
+  suppress: new Map(),  // dev_id -> timestamp until which echoes are ignored
 };
 
 const $ = (id) => document.getElementById(id);
-const cssVar = (name) => getComputedStyle(document.documentElement)
-  .getPropertyValue(name).trim();
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
 // ── theme ────────────────────────────────────────────────────────────
 function initTheme() {
@@ -572,7 +492,7 @@ $("themeBtn").addEventListener("click", () => {
   restyleCharts();
 });
 
-// ── bottom nav (mobile) ──────────────────────────────────────────────
+// ── tabs ─────────────────────────────────────────────────────────────
 function selectPanel(name, scroll = true) {
   if (!document.getElementById("panel-" + name)) return;
   document.querySelectorAll(".panel").forEach((p) =>
@@ -585,13 +505,330 @@ function selectPanel(name, scroll = true) {
 }
 document.querySelectorAll(".navbtn").forEach((btn) =>
   btn.addEventListener("click", () => selectPanel(btn.dataset.panel)));
+selectPanel(new URLSearchParams(location.search).get("tab") || "devices", false);
 
-// ?tab=control deep-links straight to a panel (desktop shows them all anyway).
-selectPanel(new URLSearchParams(location.search).get("tab") || "live", false);
+// ── device model ─────────────────────────────────────────────────────
+function upsertDevice(entry) {
+  const id = entry.dev_id;
+  const dev = state.devices.get(id) || { dev_id: id, ac: {}, reading: null, ts: 0 };
+  for (const k of ["name", "location", "brand", "model", "protocol", "last_seen"]) {
+    if (entry[k] !== undefined && entry[k] !== null) dev[k] = entry[k];
+  }
+  if (entry.ac_state) dev.ac = { ...dev.ac, ...entry.ac_state };
+  if (entry.latest) { dev.reading = entry.latest; dev.ts = entry.latest.ts || 0; }
+  state.devices.set(id, dev);
+  return dev;
+}
 
-// ── charts ───────────────────────────────────────────────────────────
-// One series per plot. Two measures on different scales get two charts,
-// never two y-axes on one plot.
+const isOnline = (dev) => dev.ts > 0 && Date.now() - dev.ts < state.staleMs;
+const isRunning = (dev) => isOnline(dev) && !!(dev.reading && dev.reading.ac_on);
+
+function deviceMatches(dev) {
+  if (state.filter === "on" && !isRunning(dev)) return false;
+  if (state.filter === "off" && (!isOnline(dev) || isRunning(dev))) return false;
+  if (state.filter === "offline" && isOnline(dev)) return false;
+  const q = state.query.trim().toLowerCase();
+  if (!q) return true;
+  return [dev.name, dev.location, dev.brand, dev.model, "디바이스 " + dev.dev_id]
+    .filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
+}
+
+// ── device grid ──────────────────────────────────────────────────────
+// The grid is rebuilt only when the visible set changes. A `live` message
+// writes through cached element references instead, because twelve devices
+// at 1Hz would otherwise rebuild the DOM twelve times a second.
+function renderGrid() {
+  const ids = [...state.devices.keys()].sort((a, b) => a - b)
+    .filter((id) => deviceMatches(state.devices.get(id)));
+
+  const unchanged = ids.length === state.visible.length &&
+    ids.every((id, i) => id === state.visible[i]);
+  // Never rebuild while someone is typing a name or location into a card.
+  const editing = document.activeElement &&
+    document.activeElement.classList.contains("inline-edit");
+  if (!unchanged && !editing) {
+    state.visible = ids;
+    const grid = $("deviceGrid");
+    grid.innerHTML = "";
+    state.cards.clear();
+    for (const id of ids) grid.appendChild(buildCard(state.devices.get(id)));
+  }
+
+  const total = state.devices.size;
+  $("gridEmpty").classList.toggle("hidden", ids.length > 0);
+  $("gridEmpty").textContent = total === 0
+    ? "디바이스를 기다리는 중입니다."
+    : "조건에 맞는 디바이스가 없습니다.";
+  for (const id of ids) paintCard(id);
+}
+
+function buildCard(dev) {
+  const el = document.createElement("article");
+  el.className = "devcard card p-3.5";
+  el.dataset.dev = dev.dev_id;
+  el.innerHTML = `
+    <header class="flex items-center gap-2">
+      <span class="dot w-2 h-2 rounded-full shrink-0" style="background:var(--muted)"></span>
+      <input class="devname inline-edit text-sm font-semibold" maxlength="32"
+             aria-label="디바이스 이름">
+      <button class="fw shrink-0 rounded-lg border hair p-1.5 needs-online"
+              title="펌웨어 배포" aria-label="펌웨어 배포">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      </button>
+    </header>
+
+    <div class="flex items-center gap-1 mt-1 text-xs ink3 min-w-0">
+      <span class="model truncate shrink-0">모델 미등록</span>
+      <span aria-hidden="true">·</span>
+      <input class="devloc inline-edit text-xs" maxlength="32" placeholder="위치 입력"
+             aria-label="설치 위치">
+    </div>
+
+    <div class="flex items-end gap-6 mt-3">
+      <div>
+        <div class="flex items-start">
+          <span class="temp text-3xl font-semibold tnum leading-none">--</span>
+          <span class="text-xs ink3 mt-0.5">°C</span>
+        </div>
+        <p class="text-[11px] ink3 mt-1">실내온도</p>
+      </div>
+      <div>
+        <div class="flex items-start">
+          <span class="hum text-3xl font-semibold tnum leading-none">--</span>
+          <span class="text-xs ink3 mt-0.5">%</span>
+        </div>
+        <p class="text-[11px] ink3 mt-1">습도</p>
+      </div>
+      <p class="status text-[11px] ink3 ml-auto text-right"></p>
+    </div>
+
+    <div class="mt-3 pt-3 border-t hair needs-online">
+      <button class="power w-full rounded-xl py-2.5 text-sm font-semibold border hair seg">
+        전원 꺼짐
+      </button>
+      <div class="mt-2 flex items-center justify-between gap-2 rounded-xl p-2"
+           style="background:var(--surface-2)">
+        <button class="tdown w-9 h-9 rounded-full border hair grid place-items-center
+                       text-lg font-light active:scale-95 transition"
+                style="background:var(--surface-1)" aria-label="희망온도 낮춤">−</button>
+        <span class="setpoint text-lg font-semibold tnum">24 °C</span>
+        <button class="tup w-9 h-9 rounded-full border hair grid place-items-center
+                       text-lg font-light active:scale-95 transition"
+                style="background:var(--surface-1)" aria-label="희망온도 높임">+</button>
+      </div>
+      <div class="mt-2 grid grid-cols-2 gap-2">
+        <select class="mode rounded-lg border hair px-2 py-1.5 text-xs" aria-label="운전 모드">
+          ${Object.entries(MODE_LABEL).map(([v, l]) =>
+            `<option value="${v}">${l}</option>`).join("")}
+        </select>
+        <select class="fan rounded-lg border hair px-2 py-1.5 text-xs" aria-label="바람세기">
+          ${Object.entries(FAN_LABEL).map(([v, l]) =>
+            `<option value="${v}">${l}</option>`).join("")}
+        </select>
+      </div>
+    </div>`;
+
+  const q = (sel) => el.querySelector(sel);
+  const refs = { el, dot: q(".dot"), name: q(".devname"), loc: q(".devloc"),
+                 model: q(".model"), temp: q(".temp"), hum: q(".hum"),
+                 status: q(".status"), power: q(".power"), setpoint: q(".setpoint"),
+                 mode: q(".mode"), fan: q(".fan") };
+  state.cards.set(dev.dev_id, refs);
+
+  const id = dev.dev_id;
+  q(".power").addEventListener("click", () =>
+    commandAc(id, { power: (state.devices.get(id).ac.power ? 0 : 1) }));
+  q(".tdown").addEventListener("click", () =>
+    commandAc(id, { temp: Math.max(16, (state.devices.get(id).ac.temp || 24) - 1) }));
+  q(".tup").addEventListener("click", () =>
+    commandAc(id, { temp: Math.min(30, (state.devices.get(id).ac.temp || 24) + 1) }));
+  q(".mode").addEventListener("change", (e) => commandAc(id, { mode: e.target.value }));
+  q(".fan").addEventListener("change", (e) => commandAc(id, { fan: e.target.value }));
+  q(".fw").addEventListener("click", () => openSota(id));
+
+  const commitName = () => saveMeta(id, { name: refs.name.value.trim() || `디바이스 ${id}` });
+  const commitLoc = () => saveMeta(id, { location: refs.loc.value.trim() });
+  refs.name.addEventListener("blur", commitName);
+  refs.loc.addEventListener("blur", commitLoc);
+  for (const input of [refs.name, refs.loc]) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+      if (e.key === "Escape") { paintCard(id); input.blur(); }
+    });
+  }
+  return el;
+}
+
+function paintCard(id) {
+  const dev = state.devices.get(id);
+  const c = state.cards.get(id);
+  if (!dev || !c) return;
+
+  const online = isOnline(dev);
+  const running = isRunning(dev);
+  c.el.dataset.online = String(online);
+  c.dot.style.background = !online ? "var(--muted)"
+    : running ? "var(--good)" : "var(--axis)";
+
+  if (document.activeElement !== c.name) c.name.value = dev.name || `디바이스 ${id}`;
+  if (document.activeElement !== c.loc) c.loc.value = dev.location || "";
+  c.model.textContent = dev.model ? `${dev.brand ? dev.brand + " " : ""}${dev.model}`
+                                  : "모델 미등록";
+
+  const r = dev.reading;
+  c.temp.textContent = online && r ? r.temp.toFixed(1) : "--";
+  c.hum.textContent = online && r ? r.hum.toFixed(0) : "--";
+
+  if (!online) {
+    c.status.textContent = dev.ts ? `${Math.round((Date.now() - dev.ts) / 1000)}초째 수신 없음`
+                                  : "수신 없음";
+  } else if (r && r.fault) {
+    c.status.textContent = "센서 이상";
+  } else {
+    c.status.textContent = r && r.ir_ready ? "IR 준비됨" : "IR 미탑재";
+  }
+
+  const ac = dev.ac || {};
+  const on = !!ac.power;
+  c.power.textContent = on ? "전원 켜짐" : "전원 꺼짐";
+  c.power.setAttribute("aria-pressed", String(on));
+  c.power.style.background = on ? "var(--good)" : "";
+  c.power.style.color = on ? "#ffffff" : "";
+  c.power.style.borderColor = on ? "var(--good)" : "";
+  c.setpoint.textContent = `${ac.temp ?? 24} °C`;
+  if (document.activeElement !== c.mode) c.mode.value = ac.mode || "cool";
+  if (document.activeElement !== c.fan) c.fan.value = ac.fan || "auto";
+}
+
+// ── summary ──────────────────────────────────────────────────────────
+function renderSummary() {
+  const devs = [...state.devices.values()];
+  const live = devs.filter(isOnline).filter((d) => d.reading);
+  const temps = live.map((d) => d.reading.temp);
+  const running = live.filter((d) => d.reading.ac_on).length;
+
+  const fmt = (v) => (v === undefined ? "--" : v.toFixed(1));
+  $("sumAvg").textContent = temps.length
+    ? fmt(temps.reduce((a, b) => a + b, 0) / temps.length) : "--";
+  $("sumMin").textContent = temps.length ? fmt(Math.min(...temps)) : "--";
+  $("sumMax").textContent = temps.length ? fmt(Math.max(...temps)) : "--";
+  $("sumOn").textContent = running;
+  $("sumTotal").textContent = devs.length;
+  $("sumMeta").textContent = devs.length
+    ? `${live.length} / ${devs.length}대 수신` : "수신 대기 중";
+  $("headDevices").textContent = `${devs.length}대`;
+
+  const anyOn = running > 0;
+  $("bulkPower").textContent = anyOn ? "전체 끄기" : "전체 켜기";
+  $("bulkPower").setAttribute("aria-pressed", String(anyOn));
+
+  // Mirror the devices rather than showing a number nothing is set to. While
+  // the operator is working the +/- buttons their value wins.
+  if (Date.now() > state.bulkTouchedUntil) {
+    const setpoints = devs.map((d) => d.ac && d.ac.temp).filter((v) => v != null);
+    if (setpoints.length) {
+      const distinct = new Set(setpoints);
+      state.bulkMixed = distinct.size > 1;
+      state.bulkTemp = distinct.size === 1 ? setpoints[0]
+        : Math.round(setpoints.reduce((a, b) => a + b, 0) / setpoints.length);
+    }
+  }
+  $("bulkTemp").textContent = state.bulkTemp;
+  $("bulkTempLabel").textContent = state.bulkMixed
+    ? "전체 희망온도 (기기별 상이)" : "전체 희망온도";
+}
+
+// Repaint on a timer rather than per message: at twelve devices the page takes
+// twelve `live` messages a second, and the summary only needs to look live.
+// This must run unconditionally -- devices go offline by the *absence* of
+// messages, so a dirty flag fed by incoming data would freeze the cards
+// showing stale readings exactly when the stream stops.
+setInterval(() => {
+  renderGrid();      // staleness can change which devices match the filter
+  renderSummary();
+}, 500);
+
+// ── control ──────────────────────────────────────────────────────────
+const acTimers = new Map();
+
+function commandAc(devId, patch) {
+  const dev = state.devices.get(devId);
+  if (!dev) return;
+  Object.assign(dev.ac, patch);
+  state.suppress.set(devId, Date.now() + 1200);   // don't let the echo fight the user
+  paintCard(devId);
+
+  clearTimeout(acTimers.get(devId));
+  // Debounced per device: holding +/- sends one command, not one per tap.
+  acTimers.set(devId, setTimeout(() => {
+    send({ type: "ac_control", target_id: devId, power: dev.ac.power ?? 0,
+           mode: dev.ac.mode || "cool", temp: dev.ac.temp ?? 24,
+           fan: dev.ac.fan || "auto" });
+  }, 250));
+}
+
+let bulkTimer = null;
+function commandBulk(patch) {
+  if (!state.devices.size) { toast("제어할 디바이스가 없습니다.", "warning"); return; }
+  const now = Date.now();
+  for (const dev of state.devices.values()) {
+    Object.assign(dev.ac, patch);
+    state.suppress.set(dev.dev_id, now + 1500);
+  }
+  for (const id of state.visible) paintCard(id);
+
+  clearTimeout(bulkTimer);
+  bulkTimer = setTimeout(() => {
+    send({ type: "ac_control", target_id: "all", ...patch });
+  }, 250);
+}
+
+$("bulkPower").addEventListener("click", () => {
+  const anyOn = [...state.devices.values()].some(isRunning);
+  commandBulk({ power: anyOn ? 0 : 1 });
+});
+$("bulkDown").addEventListener("click", () => {
+  state.bulkTemp = Math.max(16, state.bulkTemp - 1);
+  state.bulkMixed = false;
+  state.bulkTouchedUntil = Date.now() + 3000;
+  commandBulk({ temp: state.bulkTemp });
+});
+$("bulkUp").addEventListener("click", () => {
+  state.bulkTemp = Math.min(30, state.bulkTemp + 1);
+  state.bulkMixed = false;
+  state.bulkTouchedUntil = Date.now() + 3000;
+  commandBulk({ temp: state.bulkTemp });
+});
+
+function saveMeta(devId, patch) {
+  const dev = state.devices.get(devId);
+  if (!dev) return;
+  const key = Object.keys(patch)[0];
+  if ((dev[key] || "") === (patch[key] || "")) return;   // nothing actually changed
+  Object.assign(dev, patch);
+  send({ type: "device_update", dev_id: devId, ...patch });
+  renderGrid();
+}
+
+// ── search + filters ─────────────────────────────────────────────────
+let searchTimer = null;
+$("search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  const value = e.target.value;
+  searchTimer = setTimeout(() => { state.query = value; renderGrid(); }, 150);
+});
+document.querySelectorAll("[data-filter]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-filter]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b === btn)));
+    state.filter = btn.dataset.filter;
+    renderGrid();
+  });
+});
+
+// ── charts (1-minute statistics only) ────────────────────────────────
 const crosshairPlugin = {
   id: "crosshair",
   afterDatasetsDraw(chart) {
@@ -615,12 +852,10 @@ Chart.register(crosshairPlugin);
 
 const clockTick = (ms) => {
   const d = new Date(ms);
-  return String(d.getHours()).padStart(2, "0") + ":" +
-         String(d.getMinutes()).padStart(2, "0");
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
 };
-const clockSec = (ms) => clockTick(ms) + ":" + String(new Date(ms).getSeconds()).padStart(2, "0");
 
-function baseOptions({ unit, xFormat, yPad }) {
+function baseOptions({ unit }) {
   return {
     responsive: true, maintainAspectRatio: false, animation: false,
     parsing: false, normalized: true,
@@ -632,25 +867,18 @@ function baseOptions({ unit, xFormat, yPad }) {
         displayColors: true, boxWidth: 8, boxHeight: 8, usePointStyle: true,
         padding: 10, cornerRadius: 8, borderWidth: 1,
         callbacks: {
-          title: (items) => xFormat(items[0].parsed.x),
+          title: (items) => clockTick(items[0].parsed.x),
           label: (item) => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${unit}`,
         },
       },
     },
     scales: {
-      x: {
-        type: "linear",
-        border: { display: false },
-        grid: { display: false },
-        ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true,
-                 callback: (v) => xFormat(v) },
-      },
-      y: {
-        border: { display: false },
-        grid: { drawTicks: false, lineWidth: 1 },
-        ticks: { maxTicksLimit: 5, padding: 8,
-                 callback: (v) => Number(v).toFixed(yPad) },
-      },
+      x: { type: "linear", border: { display: false }, grid: { display: false },
+           ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true,
+                    callback: (v) => clockTick(v) } },
+      y: { border: { display: false }, grid: { drawTicks: false, lineWidth: 1 },
+           ticks: { maxTicksLimit: 5, padding: 8,
+                    callback: (v) => Number(v).toFixed(1) } },
     },
   };
 }
@@ -658,9 +886,8 @@ function baseOptions({ unit, xFormat, yPad }) {
 function lineDataset(label, color, wash) {
   return {
     label, data: [], borderColor: color, backgroundColor: wash || "transparent",
-    fill: !!wash, borderWidth: 2, tension: 0.28,
+    fill: !!wash, borderWidth: 2, tension: 0.2,
     borderJoinStyle: "round", borderCapStyle: "round",
-    // Only the newest point carries a marker -- with a 2px surface ring.
     pointRadius: (c) => (c.dataIndex === c.dataset.data.length - 1 ? 4 : 0),
     pointHoverRadius: 5,
     pointBackgroundColor: color,
@@ -670,25 +897,17 @@ function lineDataset(label, color, wash) {
 }
 
 const charts = {};
+let statsMinutes = 180;
+let stats = [];
+
+function setWindow(chart, min, max) {
+  chart.options.scales.x.min = min;
+  chart.options.scales.x.max = max;
+}
 
 function buildCharts() {
-  charts.liveTemp = new Chart($("liveTempChart"), {
-    type: "line",
-    data: { datasets: [lineDataset("실내온도", cssVar("--series-temp"),
-                                   cssVar("--series-temp-wash"))] },
-    options: baseOptions({ unit: "°C", xFormat: clockSec, yPad: 1 }),
-  });
-
-  charts.liveHum = new Chart($("liveHumChart"), {
-    type: "line",
-    data: { datasets: [lineDataset("습도", cssVar("--series-hum"),
-                                   cssVar("--series-hum-wash"))] },
-    options: baseOptions({ unit: "%", xFormat: clockSec, yPad: 1 }),
-  });
-
-  // Temp stats: the min-max band is the same hue as its average line, so the
-  // plot still reads as one series with a range -- not as three series.
-  const bandOpts = baseOptions({ unit: "°C", xFormat: clockTick, yPad: 1 });
+  // The min-max band is the same hue as its average line, so the plot still
+  // reads as one series with a range -- not as three series.
   charts.statsTemp = new Chart($("statsTempChart"), {
     type: "line",
     data: { datasets: [
@@ -696,24 +915,19 @@ function buildCharts() {
         pointRadius: 0, fill: "+1", backgroundColor: cssVar("--series-temp-wash") },
       { label: "최저", data: [], borderColor: "transparent", borderWidth: 0,
         pointRadius: 0, fill: false },
-      Object.assign(lineDataset("평균", cssVar("--series-temp")), { tension: 0.2 }),
+      lineDataset("평균", cssVar("--series-temp")),
     ]},
-    options: bandOpts,
+    options: baseOptions({ unit: "°C" }),
   });
-
   charts.statsHum = new Chart($("statsHumChart"), {
     type: "line",
-    data: { datasets: [Object.assign(
-      lineDataset("평균 습도", cssVar("--series-hum")), { tension: 0.2 })] },
-    options: baseOptions({ unit: "%", xFormat: clockTick, yPad: 1 }),
+    data: { datasets: [lineDataset("평균 습도", cssVar("--series-hum"))] },
+    options: baseOptions({ unit: "%" }),
   });
 
-  // Give every scale a real window before the first datapoint arrives.
   const now = Date.now();
-  setWindow(charts.liveTemp, now - MAX_LIVE_POINTS * 1000, now);
-  setWindow(charts.liveHum, now - MAX_LIVE_POINTS * 1000, now);
-  setWindow(charts.statsTemp, now - state.statsMinutes * 60000, now);
-  setWindow(charts.statsHum, now - state.statsMinutes * 60000, now);
+  setWindow(charts.statsTemp, now - statsMinutes * 60000, now);
+  setWindow(charts.statsHum, now - statsMinutes * 60000, now);
   restyleCharts();
 }
 
@@ -721,8 +935,7 @@ function restyleCharts() {
   const grid = cssVar("--grid"), muted = cssVar("--muted"), surface = cssVar("--surface-1");
   const ink = cssVar("--text-primary"), ink2 = cssVar("--text-secondary");
   const border = cssVar("--axis");
-  const hues = { liveTemp: "--series-temp", liveHum: "--series-hum",
-                 statsTemp: "--series-temp", statsHum: "--series-hum" };
+  const hues = { statsTemp: "--series-temp", statsHum: "--series-hum" };
 
   Object.entries(charts).forEach(([key, chart]) => {
     if (!chart) return;
@@ -736,111 +949,19 @@ function restyleCharts() {
     tt.borderColor = border;
 
     const hue = cssVar(hues[key]);
-    const wash = key === "liveTemp" ? cssVar("--series-temp-wash")
-               : key === "liveHum" ? cssVar("--series-hum-wash") : null;
     chart.data.datasets.forEach((ds) => {
-      if (ds.borderColor === "transparent") {           // the band fill
+      if (ds.borderColor === "transparent") {
         ds.backgroundColor = cssVar("--series-temp-wash");
         return;
       }
       ds.borderColor = hue;
       ds.pointBackgroundColor = hue;
       ds.pointBorderColor = surface;
-      if (ds.fill && wash) ds.backgroundColor = wash;
     });
     chart.update("none");
   });
 }
 
-// ── live data ────────────────────────────────────────────────────────
-// A store can hold several Atom devices. Each plot carries ONE series, so the
-// live view follows one device at a time rather than interleaving them all
-// into a single line (which would render as a sawtooth, not a trend).
-function renderDevices() {
-  const ids = [...state.devices].sort((a, b) => a - b);
-  const wrap = $("devChips");
-  if (ids.length < 2) { wrap.innerHTML = ""; return; }
-  wrap.innerHTML = ids.map((id) =>
-    `<button class="seg rounded-lg border hair px-2.5 py-1 text-xs" data-dev="${id}"
-             aria-pressed="${id === state.activeDev}">디바이스 ${id}</button>`).join("");
-  wrap.querySelectorAll("[data-dev]").forEach((b) =>
-    b.addEventListener("click", () => selectDevice(Number(b.dataset.dev))));
-}
-
-function selectDevice(id) {
-  if (id === state.activeDev) return;
-  state.activeDev = id;
-  charts.liveTemp.data.datasets[0].data.length = 0;
-  charts.liveHum.data.datasets[0].data.length = 0;
-  charts.liveTemp.update("none");
-  charts.liveHum.update("none");
-  // Point the remote at the same device, but don't fire a command by itself.
-  state.ac.target_id = id;
-  renderAc();
-  renderDevices();
-}
-
-function pushLive(reading) {
-  if (!state.devices.has(reading.dev_id)) {
-    state.devices.add(reading.dev_id);
-    if (state.activeDev === null || reading.dev_id < state.activeDev) {
-      state.activeDev = reading.dev_id;
-    }
-    renderDevices();
-  }
-  state.packets += 1;
-  $("gwPackets").textContent = state.packets.toLocaleString("ko-KR");
-  if (reading.dev_id !== state.activeDev) return;
-
-  const t = reading.ts || Date.now();
-  const temp = charts.liveTemp.data.datasets[0].data;
-  const hum = charts.liveHum.data.datasets[0].data;
-  temp.push({ x: t, y: reading.temp });
-  hum.push({ x: t, y: reading.hum });
-  while (temp.length > MAX_LIVE_POINTS) temp.shift();
-  while (hum.length > MAX_LIVE_POINTS) hum.shift();
-  // Pin the window explicitly: left to itself a linear scale anchors at 0 and
-  // renders epoch milliseconds as meaningless clock ticks.
-  setWindow(charts.liveTemp, t - MAX_LIVE_POINTS * 1000, t);
-  setWindow(charts.liveHum, t - MAX_LIVE_POINTS * 1000, t);
-  charts.liveTemp.update("none");
-  charts.liveHum.update("none");
-
-  setGauge("gTempArc", "gTempVal", reading.temp, 10, 40, 1);
-  setGauge("gHumArc", "gHumVal", reading.hum, 0, 100, 0);
-  $("liveTempNow").textContent = reading.temp.toFixed(1) + " °C";
-  $("liveHumNow").textContent = reading.hum.toFixed(1) + " %";
-  $("devInfo").textContent = `dev ${reading.dev_id} · seq ${reading.seq}`;
-  $("lastSeen").textContent = clockSec(t) + " 수신";
-}
-
-function setWindow(chart, min, max) {
-  chart.options.scales.x.min = min;
-  chart.options.scales.x.max = max;
-}
-
-const GAUGE_C = 2 * Math.PI * 52;
-function setGauge(arcId, valId, value, min, max, digits) {
-  const frac = Math.max(0, Math.min(1, (value - min) / (max - min)));
-  $(arcId).style.strokeDashoffset = String(GAUGE_C * (1 - frac));
-  $(valId).textContent = value.toFixed(digits);
-}
-
-// ── 1-minute statistics ──────────────────────────────────────────────
-function replaceStats(points) {
-  state.stats = points.slice();
-  renderStats();
-}
-function appendStats(points) {
-  const byTs = new Map(state.stats.map((p) => [p.ts, p]));
-  points.forEach((p) => {
-    const prior = byTs.get(p.ts);
-    // Several devices report the same minute; show the store-wide average.
-    byTs.set(p.ts, prior ? mergePoint(prior, p) : p);
-  });
-  state.stats = [...byTs.values()].sort((a, b) => a.ts - b.ts);
-  renderStats();
-}
 function mergePoint(a, b) {
   const na = a.sample_count || 1, nb = b.sample_count || 1, n = na + nb;
   return {
@@ -849,18 +970,26 @@ function mergePoint(a, b) {
     temp_min: Math.min(a.temp_min, b.temp_min),
     temp_max: Math.max(a.temp_max, b.temp_max),
     hum_avg: (a.hum_avg * na + b.hum_avg * nb) / n,
-    light_avg: ((a.light_avg || 0) * na + (b.light_avg || 0) * nb) / n,
     sample_count: n,
   };
+}
+function replaceStats(points) { stats = points.slice(); renderStats(); }
+function appendStats(points) {
+  const byTs = new Map(stats.map((p) => [p.ts, p]));
+  points.forEach((p) => {
+    const prior = byTs.get(p.ts);
+    byTs.set(p.ts, prior ? mergePoint(prior, p) : p);   // several devices per minute
+  });
+  stats = [...byTs.values()].sort((a, b) => a.ts - b.ts);
+  renderStats();
 }
 
 function renderStats() {
   const now = Date.now();
-  const cutoff = now / 1000 - state.statsMinutes * 60;
-  const pts = state.stats.filter((p) => p.ts >= cutoff);
+  const pts = stats.filter((p) => p.ts >= now / 1000 - statsMinutes * 60);
   $("statsEmpty").classList.toggle("hidden", pts.length > 0);
 
-  const from = now - state.statsMinutes * 60000;
+  const from = now - statsMinutes * 60000;
   const ds = charts.statsTemp.data.datasets;
   ds[0].data = pts.map((p) => ({ x: p.ts * 1000, y: p.temp_max }));
   ds[1].data = pts.map((p) => ({ x: p.ts * 1000, y: p.temp_min }));
@@ -872,7 +1001,7 @@ function renderStats() {
   setWindow(charts.statsHum, from, now);
   charts.statsHum.update("none");
 
-  const rows = pts.slice(-60).reverse().map((p) => `
+  $("tableBody").innerHTML = pts.slice(-60).reverse().map((p) => `
     <tr class="border-t" style="border-color:var(--border)">
       <td class="py-1.5 pr-3">${clockTick(p.ts * 1000)}</td>
       <td class="py-1.5 pr-3">${p.temp_avg.toFixed(2)}</td>
@@ -880,8 +1009,7 @@ function renderStats() {
       <td class="py-1.5 pr-3">${p.temp_max.toFixed(2)}</td>
       <td class="py-1.5 pr-3">${p.hum_avg.toFixed(2)}</td>
       <td class="py-1.5">${p.sample_count || 0}</td>
-    </tr>`).join("");
-  $("tableBody").innerHTML = rows ||
+    </tr>`).join("") ||
     `<tr><td colspan="6" class="py-4 text-center ink3">데이터 없음</td></tr>`;
 }
 
@@ -889,8 +1017,8 @@ document.querySelectorAll("[data-range]").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll("[data-range]").forEach((b) =>
       b.setAttribute("aria-pressed", String(b === btn)));
-    state.statsMinutes = Number(btn.dataset.range);
-    send({ type: "request_stats", minutes: state.statsMinutes });
+    statsMinutes = Number(btn.dataset.range);
+    send({ type: "request_stats", minutes: statsMinutes });
     renderStats();
   });
 });
@@ -899,57 +1027,6 @@ $("tableBtn").addEventListener("click", () => {
   $("tableBtn").setAttribute("aria-pressed", String(shown));
 });
 
-// ── AC remote ────────────────────────────────────────────────────────
-function renderAc() {
-  const ac = state.ac;
-  $("powerBtn").setAttribute("aria-pressed", String(!!ac.power));
-  $("powerState").textContent = ac.power ? "켜짐" : "꺼짐";
-  $("powerBtn").style.background = ac.power ? "var(--good)" : "var(--surface-2)";
-  $("powerBtn").style.color = ac.power ? "#ffffff" : "var(--text-primary)";
-  $("powerBtn").style.borderColor = ac.power ? "var(--good)" : "var(--border)";
-  $("tempVal").textContent = ac.temp;
-  document.querySelectorAll("[data-mode]").forEach((b) =>
-    b.setAttribute("aria-pressed", String(b.dataset.mode === ac.mode)));
-  document.querySelectorAll("[data-fan]").forEach((b) =>
-    b.setAttribute("aria-pressed", String(b.dataset.fan === ac.fan)));
-}
-
-let acTimer = null;
-function commandAc(patch) {
-  Object.assign(state.ac, patch);
-  renderAc();
-  state.suppressUntil = Date.now() + 1200;   // don't let the echo fight the user
-  clearTimeout(acTimer);
-  // Debounced: holding +/- sends one command, not one per tap.
-  acTimer = setTimeout(() => {
-    send(Object.assign({ type: "ac_control" }, state.ac));
-  }, 250);
-}
-
-$("powerBtn").addEventListener("click", () => commandAc({ power: state.ac.power ? 0 : 1 }));
-$("tempUp").addEventListener("click", () =>
-  commandAc({ temp: Math.min(30, state.ac.temp + 1) }));
-$("tempDown").addEventListener("click", () =>
-  commandAc({ temp: Math.max(16, state.ac.temp - 1) }));
-document.querySelectorAll("[data-mode]").forEach((b) =>
-  b.addEventListener("click", () => commandAc({ mode: b.dataset.mode })));
-document.querySelectorAll("[data-fan]").forEach((b) =>
-  b.addEventListener("click", () => commandAc({ fan: b.dataset.fan })));
-
-function logPacket(hex, ac) {
-  const list = $("packetLog");
-  if (list.firstElementChild && list.firstElementChild.classList.contains("ink3")) {
-    list.innerHTML = "";
-  }
-  const li = document.createElement("li");
-  li.className = "flex justify-between gap-2";
-  li.innerHTML = `<span class="ink">${hex.replace(/(..)/g, "$1 ").trim()}</span>
-                  <span class="ink3 shrink-0">${MODE_LABEL[ac.mode] || ac.mode} ${ac.temp}° ` +
-                  `${FAN_LABEL[ac.fan] || ac.fan}</span>`;
-  list.prepend(li);
-  while (list.children.length > 8) list.lastElementChild.remove();
-}
-
 // ── SOTA ─────────────────────────────────────────────────────────────
 async function loadCatalog() {
   try {
@@ -957,37 +1034,40 @@ async function loadCatalog() {
     state.catalog = (await res.json()).catalog || [];
   } catch (_) { state.catalog = []; }
   $("brandSel").innerHTML = state.catalog
-    .map((b, i) => `<option value="${i}">${b.brand}</option>`).join("");
+    .map((b, i) => `<option value="${i}">${esc(b.brand)}</option>`).join("");
   fillModels();
 }
 function fillModels() {
   const brand = state.catalog[Number($("brandSel").value) || 0];
   $("modelSel").innerHTML = (brand ? brand.models : [])
-    .map((m, i) => `<option value="${i}">${m.name} · ${m.protocol}</option>`).join("");
+    .map((m, i) => `<option value="${i}">${esc(m.name)} · ${esc(m.protocol)}</option>`).join("");
 }
 $("brandSel").addEventListener("change", fillModels);
 
-function openSota(open) {
-  $("sotaModal").classList.toggle("hidden", !open);
-  $("sotaModal").classList.toggle("flex", open);
+function openSota(devId) {
+  if (devId != null) {
+    state.sotaTarget = devId;
+    const dev = state.devices.get(devId);
+    $("sotaTargetName").textContent = (dev && dev.name) || `디바이스 ${devId}`;
+    $("sotaProgressWrap").classList.add("hidden");
+  }
+  $("sotaModal").classList.remove("hidden");
+  $("sotaModal").classList.add("flex");
 }
-$("sotaBtn").addEventListener("click", () => {
-  $("targetSel").value = state.activeDev || state.ac.target_id || 1;
-  openSota(true);
-});
-$("sotaClose").addEventListener("click", () => openSota(false));
-$("sotaBackdrop").addEventListener("click", () => openSota(false));
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") openSota(false);
-});
+function closeSota() {
+  $("sotaModal").classList.add("hidden");
+  $("sotaModal").classList.remove("flex");
+}
+$("sotaClose").addEventListener("click", closeSota);
+$("sotaBackdrop").addEventListener("click", closeSota);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSota(); });
 
 $("sotaDeploy").addEventListener("click", () => {
   const brand = state.catalog[Number($("brandSel").value) || 0];
   const model = brand && brand.models[Number($("modelSel").value) || 0];
   if (!model) { toast("모델 목록을 불러오지 못했습니다.", "critical"); return; }
-  $("sotaProgressWrap").classList.remove("hidden");
   setSotaProgress("requested", 0, "배포 요청을 보냈습니다…");
-  send({ type: "sota_deploy", target_id: Number($("targetSel").value) || 1,
+  send({ type: "sota_deploy", target_id: state.sotaTarget,
          brand: brand.brand, model: model.name, model_id: model.id,
          protocol: model.protocol });
 });
@@ -1010,19 +1090,33 @@ function toast(message, level = "good") {
   el.className = "card px-3.5 py-2.5 text-sm flex items-start gap-2 pointer-events-auto";
   el.innerHTML =
     `<span class="w-2 h-2 rounded-full mt-1.5 shrink-0" style="background:var(--${level})"></span>
-     <span class="ink2">${message}</span>`;
+     <span class="ink2">${esc(message)}</span>`;
   $("toasts").appendChild(el);
   setTimeout(() => el.remove(), 4200);
+}
+
+function logPacket(hex, ac) {
+  const list = $("packetLog");
+  if (list.firstElementChild && list.firstElementChild.classList.contains("ink3")) {
+    list.innerHTML = "";
+  }
+  const li = document.createElement("li");
+  li.className = "flex justify-between gap-2";
+  li.innerHTML = `<span class="ink">${esc(hex.replace(/(..)/g, "$1 ").trim())}</span>
+                  <span class="ink3 shrink-0">#${ac.target_id} ${MODE_LABEL[ac.mode] || ac.mode}` +
+                  ` ${ac.temp}°</span>`;
+  list.prepend(li);
+  while (list.children.length > 8) list.lastElementChild.remove();
 }
 
 // ── connection ───────────────────────────────────────────────────────
 function setConn(kind) {
   const map = {
-    live:     ["var(--good)",     "실시간 연결"],
-    online:   ["var(--good)",     "연결됨"],
-    nogw:     ["var(--warning)",  "게이트웨이 오프라인"],
-    retry:    ["var(--serious)",  "재연결 중"],
-    down:     ["var(--critical)", "연결 끊김"],
+    live:   ["var(--good)",     "실시간 연결"],
+    online: ["var(--good)",     "연결됨"],
+    nogw:   ["var(--warning)",  "게이트웨이 오프라인"],
+    retry:  ["var(--serious)",  "재연결 중"],
+    down:   ["var(--critical)", "연결 끊김"],
   };
   const [color, label] = map[kind] || map.down;
   $("connIcon").firstElementChild.setAttribute("fill", color);
@@ -1049,7 +1143,8 @@ function send(payload) {
 function connect() {
   clearTimeout(state.reconnectTimer);
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/ws/live?store_id=${encodeURIComponent(STORE_ID)}`);
+  const ws = new WebSocket(
+    `${proto}//${location.host}/ws/live?store_id=${encodeURIComponent(STORE_ID)}`);
   state.ws = ws;
 
   ws.onopen = () => {
@@ -1058,20 +1153,16 @@ function connect() {
     clearInterval(state.pingTimer);
     state.pingTimer = setInterval(() => send({ type: "ping" }), 25000);
   };
-
   ws.onclose = () => {
     clearInterval(state.pingTimer);
     state.gatewayOnline = false;
     state.liveActive = false;
     $("livePill").classList.add("hidden");
-    // Exponential backoff, capped at 30s.
-    const delay = Math.min(30000, 1000 * Math.pow(2, state.retry++));
+    const delay = Math.min(30000, 1000 * Math.pow(2, state.retry++));   // capped backoff
     setConn(state.retry > 1 ? "retry" : "down");
     state.reconnectTimer = setTimeout(connect, delay);
   };
-
   ws.onerror = () => ws.close();
-
   ws.onmessage = (event) => {
     let msg;
     try { msg = JSON.parse(event.data); } catch (_) { return; }
@@ -1086,18 +1177,49 @@ function handle(msg) {
       $("storeId").textContent = msg.store_id;
       state.gatewayOnline = !!msg.gateway_online;
       state.liveActive = !!msg.live_active;
-      if (msg.ac_state) { Object.assign(state.ac, msg.ac_state); renderAc(); }
-      if (msg.latest) pushLive(msg.latest);
+      if (msg.stale_seconds) state.staleMs = msg.stale_seconds * 1000;
+      (msg.devices || []).forEach(upsertDevice);
       if (msg.stats) replaceStats(msg.stats);
       renderLicense(msg.license);
       renderGatewayInfo(msg.gateway_info);
+      renderGrid();
+      renderSummary();
       refreshConn();
       break;
 
-    case "live":
+    case "live": {
+      const d = msg.data;
+      const dev = state.devices.get(d.dev_id);
+      const isNew = !dev;
+      upsertDevice({ dev_id: d.dev_id, latest: d });
       state.liveActive = true;
-      refreshConn();
-      pushLive(msg.data);
+      state.packets += 1;
+      $("gwPackets").textContent = state.packets.toLocaleString("ko-KR");
+      if (isNew) { renderGrid(); refreshConn(); }
+      break;
+    }
+
+    case "device_meta":
+      upsertDevice(msg.device);
+      renderGrid();
+      break;
+
+    case "ac_state":
+      for (const u of msg.updates || []) {
+        const dev = state.devices.get(u.dev_id);
+        if (!dev) continue;
+        const until = state.suppress.get(u.dev_id) || 0;
+        if (Date.now() > until) Object.assign(dev.ac, u.state);
+        paintCard(u.dev_id);
+      }
+      if (msg.updates && msg.updates.length) {
+        const last = msg.updates[msg.updates.length - 1];
+        logPacket(last.packet_hex, last.state);
+      }
+          break;
+
+    case "ac_ack":
+      if (!msg.ok) toast(msg.message || "에어컨 명령이 거부되었습니다.", "critical");
       break;
 
     case "stats":
@@ -1114,25 +1236,11 @@ function handle(msg) {
             msg.online ? "good" : "warning");
       break;
 
-    case "ac_state":
-      if (Date.now() > state.suppressUntil) {
-        Object.assign(state.ac, msg.state);
-        renderAc();
-      }
-      $("acUpdated").textContent = "방금 전송됨";
-      if (msg.packet_hex) logPacket(msg.packet_hex, msg.state);
-      break;
-
-    case "ac_ack":
-      if (msg.ok) toast("에어컨 명령이 전달되었습니다.", "good");
-      else toast(msg.message || "에어컨 명령이 거부되었습니다.", "critical");
-      break;
-
     case "sota_progress":
       setSotaProgress(msg.stage, msg.percent, msg.message, msg.ok !== false);
       if (msg.stage === "done") {
         toast("펌웨어 배포 완료. IR 제어를 사용할 수 있습니다.", "good");
-        setTimeout(() => openSota(false), 1800);
+        setTimeout(closeSota, 1800);
       } else if (msg.ok === false) {
         toast(msg.message || "배포에 실패했습니다.", "critical");
       }
@@ -1170,7 +1278,7 @@ function renderGatewayInfo(info) {
 // ── boot ─────────────────────────────────────────────────────────────
 initTheme();
 buildCharts();
-renderAc();
+renderSummary();
 loadCatalog();
 connect();
 setInterval(() => {

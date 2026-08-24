@@ -198,8 +198,8 @@ func (c *CloudLink) writeLoop(ctx context.Context, cancel context.CancelFunc, co
 				return
 			}
 		case <-ticker.C:
-			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := conn.WriteControl(websocket.PingMessage, nil,
+				time.Now().Add(writeWait)); err != nil {
 				return
 			}
 		}
@@ -214,8 +214,12 @@ func (c *CloudLink) readLoop(cancel context.CancelFunc, conn *websocket.Conn) {
 	})
 	conn.SetPingHandler(func(appData string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
-		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
-		err := conn.WriteMessage(websocket.PongMessage, []byte(appData))
+		// This runs on the read goroutine while writeLoop owns the socket.
+		// WriteControl is the only write method gorilla allows to be called
+		// concurrently; WriteMessage here races the writer and panics with
+		// "concurrent write to websocket connection".
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData),
+			time.Now().Add(writeWait))
 		if err == websocket.ErrCloseSent {
 			return nil
 		}

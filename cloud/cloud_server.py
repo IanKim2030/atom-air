@@ -123,6 +123,21 @@ CREATE TABLE IF NOT EXISTS authorize_log (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     store_id TEXT, ts TEXT, result TEXT, detail TEXT
 );
+
+-- One row per Atom Lite. A device auto-registers the first time a packet
+-- carrying its dev_id arrives; name and location are edited from the web.
+CREATE TABLE IF NOT EXISTS devices (
+    store_id   TEXT    NOT NULL,
+    dev_id     INTEGER NOT NULL,
+    name       TEXT,
+    location   TEXT,
+    brand      TEXT,               -- recorded when a SOTA deploy completes
+    model      TEXT,
+    protocol   TEXT,
+    first_seen TEXT,
+    last_seen  TEXT,
+    PRIMARY KEY (store_id, dev_id)
+);
 """
 
 
@@ -188,6 +203,55 @@ def db_minute_stats(store_id: str, minutes: int = 120) -> list[dict]:
             "  FROM minute_stats WHERE store_id=? AND ts >= ?"
             " GROUP BY ts ORDER BY ts", (store_id, since)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# device registry
+# --------------------------------------------------------------------------
+
+def db_devices(store_id: str) -> list[dict]:
+    with closing(_connect()) as con:
+        rows = con.execute(
+            "SELECT dev_id, name, location, brand, model, protocol, first_seen, last_seen"
+            "  FROM devices WHERE store_id=? ORDER BY dev_id", (store_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def db_register_device(store_id: str, dev_id: int) -> dict:
+    """Create the row for a newly seen device, or just refresh last_seen."""
+    now = iso(utcnow())
+    with closing(_connect()) as con:
+        con.execute(
+            "INSERT INTO devices (store_id, dev_id, name, first_seen, last_seen)"
+            " VALUES (?,?,?,?,?)"
+            " ON CONFLICT(store_id, dev_id) DO UPDATE SET last_seen=excluded.last_seen",
+            (store_id, dev_id, f"디바이스 {dev_id}", now, now))
+        con.commit()
+        row = con.execute(
+            "SELECT dev_id, name, location, brand, model, protocol, first_seen, last_seen"
+            "  FROM devices WHERE store_id=? AND dev_id=?", (store_id, dev_id)).fetchone()
+    return dict(row)
+
+
+def db_update_device(store_id: str, dev_id: int, patch: dict) -> dict | None:
+    """Set any of name / location / brand / model / protocol."""
+    columns = [c for c in ("name", "location", "brand", "model", "protocol")
+               if patch.get(c) is not None]
+    with closing(_connect()) as con:
+        # An operator can name a device the cloud has not seen a packet from yet.
+        con.execute(
+            "INSERT OR IGNORE INTO devices (store_id, dev_id, name, first_seen)"
+            " VALUES (?,?,?,?)",
+            (store_id, dev_id, f"디바이스 {dev_id}", iso(utcnow())))
+        if columns:
+            assignments = ", ".join(f"{c}=?" for c in columns)
+            con.execute(f"UPDATE devices SET {assignments} WHERE store_id=? AND dev_id=?",
+                        [patch[c] for c in columns] + [store_id, dev_id])
+        con.commit()
+        row = con.execute(
+            "SELECT dev_id, name, location, brand, model, protocol, first_seen, last_seen"
+            "  FROM devices WHERE store_id=? AND dev_id=?", (store_id, dev_id)).fetchone()
+    return dict(row) if row else None
 
 
 # --------------------------------------------------------------------------
@@ -321,9 +385,16 @@ def db_set_license(store_id: str, patch: dict) -> dict:
 # connection hub
 # --------------------------------------------------------------------------
 
-def default_ac_state() -> dict:
-    return {"target_id": 1, "power": 0, "mode": "cool", "temp": 24, "fan": "auto",
+def default_ac_state(dev_id: int = 1) -> dict:
+    return {"target_id": dev_id, "power": 0, "mode": "cool", "temp": 24, "fan": "auto",
             "updated_at": None}
+
+
+# How long a device may go quiet before the UI calls it offline.
+DEVICE_STALE_SECONDS = 15
+# last_seen is refreshed at most this often per device: at 12 devices x 1Hz a
+# per-packet write would be a dozen writes a second for no benefit.
+LAST_SEEN_WRITE_INTERVAL = 60.0
 
 
 @dataclass
@@ -331,11 +402,35 @@ class StoreHub:
     store_id: str
     gateway: WebSocket | None = None
     viewers: set[WebSocket] = field(default_factory=set)
-    ac_state: dict = field(default_factory=default_ac_state)
-    latest: dict | None = None
+    # Both keyed by dev_id -- a store holds ten or more Atom Lite units, and one
+    # device's setpoint must not overwrite another's.
+    ac_states: dict[int, dict] = field(default_factory=dict)
+    latest: dict[int, dict] = field(default_factory=dict)
+    devices: dict[int, dict] = field(default_factory=dict)   # dev_id -> registry row
+    last_seen_written: dict[int, float] = field(default_factory=dict)
     live_active: bool = False
     sota: dict | None = None
+    sota_target: dict | None = None   # what the in-flight deploy is flashing
     gateway_info: dict = field(default_factory=dict)
+
+    def ac_state_for(self, dev_id: int) -> dict:
+        state = self.ac_states.get(dev_id)
+        if state is None:
+            state = self.ac_states[dev_id] = default_ac_state(dev_id)
+        return state
+
+    def known_device_ids(self) -> list[int]:
+        """Every device we have registry metadata or a reading for."""
+        return sorted(set(self.devices) | set(self.latest) | set(self.ac_states))
+
+    def device_payload(self) -> list[dict]:
+        """The per-device view the browser renders cards from."""
+        return [{
+            **(self.devices.get(dev_id) or {"dev_id": dev_id, "name": f"디바이스 {dev_id}"}),
+            "dev_id": dev_id,
+            "ac_state": self.ac_state_for(dev_id),
+            "latest": self.latest.get(dev_id),
+        } for dev_id in self.known_device_ids()]
 
 
 async def _send_json(ws: WebSocket, payload: dict) -> bool:
@@ -361,11 +456,10 @@ class HubManager:
         hub = self._hubs.get(store_id)
         if hub is None:
             return {"store_id": store_id, "gateway_online": False, "viewers": 0,
-                    "live_active": False, "ac_state": default_ac_state(), "latest": None,
-                    "gateway_info": {}}
+                    "live_active": False, "devices": [], "gateway_info": {}}
         return {"store_id": store_id, "gateway_online": hub.gateway is not None,
                 "viewers": len(hub.viewers), "live_active": hub.live_active,
-                "ac_state": hub.ac_state, "latest": hub.latest,
+                "devices": hub.device_payload(),
                 "gateway_info": hub.gateway_info}
 
     async def broadcast(self, hub: StoreHub, payload: dict) -> None:
@@ -516,6 +610,38 @@ async def store_authorize(req: AuthorizeRequest) -> JSONResponse:
     return JSONResponse(verdict)
 
 
+@app.get("/api/v1/stores/{store_id}/devices")
+async def list_devices(store_id: str) -> dict:
+    rows = await asyncio.to_thread(db_devices, store_id)
+    snap = manager.snapshot(store_id)
+    live = {d["dev_id"]: d for d in snap["devices"]}
+    # Merge the registry with whatever the hub currently holds, so a device
+    # seen this session but not yet flushed to disk still appears.
+    merged = {row["dev_id"]: {**row, **live.get(row["dev_id"], {})} for row in rows}
+    for dev_id, entry in live.items():
+        merged.setdefault(dev_id, entry)
+    return {"store_id": store_id,
+            "devices": [merged[k] for k in sorted(merged)],
+            "stale_seconds": DEVICE_STALE_SECONDS}
+
+
+class DevicePatch(BaseModel):
+    name: str | None = Field(None, max_length=64)
+    location: str | None = Field(None, max_length=64)
+
+
+@app.post("/api/v1/stores/{store_id}/devices/{dev_id}")
+async def update_device(store_id: str, dev_id: int, patch: DevicePatch) -> dict:
+    row = await asyncio.to_thread(db_update_device, store_id, dev_id,
+                                  patch.model_dump(exclude_none=True))
+    if row is None:
+        raise HTTPException(status_code=404, detail="device not found")
+    hub = manager.get(store_id)
+    hub.devices[dev_id] = row
+    await manager.broadcast(hub, {"type": "device_meta", "device": row})
+    return {"device": row}
+
+
 class LicensePatch(BaseModel):
     name: str | None = None
     license_state: str | None = Field(None, pattern="^(active|expired|suspended)$")
@@ -534,6 +660,75 @@ async def set_license(store_id: str, patch: LicensePatch) -> dict:
 # WebSocket: browser
 # --------------------------------------------------------------------------
 
+async def handle_ac_control(hub: StoreHub, ws: WebSocket, msg: dict) -> None:
+    """Drive one device, or every device when target_id is "all".
+
+    Bulk is expanded here into one AC_CONTROL per device, so the gateway keeps
+    handling exactly one command shape and needs no change.
+    """
+    raw_target = msg.get("target_id")
+    bulk = isinstance(raw_target, str) and raw_target.lower() == "all"
+
+    if bulk:
+        targets = hub.known_device_ids()
+        if not targets:
+            await _send_json(ws, {"type": "error", "scope": "ac_control",
+                                  "message": "제어할 디바이스가 없습니다."})
+            return
+    else:
+        try:
+            targets = [int(raw_target)]
+        except (TypeError, ValueError):
+            await _send_json(ws, {"type": "error", "scope": "ac_control",
+                                  "message": "target_id가 필요합니다."})
+            return
+
+    if hub.gateway is None:
+        await _send_json(ws, {
+            "type": "error", "scope": "ac_control",
+            "message": "게이트웨이가 오프라인입니다. 명령을 전송할 수 없습니다."})
+        return
+
+    updated: list[dict] = []
+    for dev_id in targets:
+        # Each device keeps its own mode/fan; a bulk command only overrides
+        # the fields it actually carries.
+        state = dict(hub.ac_state_for(dev_id))
+        state["target_id"] = dev_id
+        for key in ("power", "mode", "temp", "fan"):
+            if msg.get(key) is not None:
+                state[key] = msg[key]
+        try:
+            state["power"] = 1 if int(state["power"]) else 0
+            state["mode"] = AC_MODE_NAMES[normalize_mode(state["mode"])]
+            state["fan"] = AC_FAN_NAMES[normalize_fan(state["fan"])]
+            state["temp"] = clamp_target_temp(state["temp"])
+            packet = encode_ac_packet(dev_id, state["power"], state["mode"],
+                                      state["temp"], state["fan"])
+        except (PacketError, KeyError, TypeError, ValueError) as exc:
+            await _send_json(ws, {"type": "error", "scope": "ac_control",
+                                  "message": f"디바이스 {dev_id}: {exc}"})
+            continue
+
+        if not await manager.to_gateway(hub, {
+                "cmd": "AC_CONTROL", "store_id": hub.store_id,
+                "packet_hex": packet.hex(), "state": state, "ts": iso(utcnow())}):
+            await _send_json(ws, {
+                "type": "error", "scope": "ac_control",
+                "message": "게이트웨이 연결이 끊겼습니다. 일부 명령이 전송되지 않았습니다."})
+            break
+
+        state["updated_at"] = iso(utcnow())
+        hub.ac_states[dev_id] = state
+        updated.append({"dev_id": dev_id, "state": state, "packet_hex": packet.hex()})
+
+    if updated:
+        # One echo for the whole batch, so a bulk press is a single repaint.
+        await manager.broadcast(hub, {"type": "ac_state", "bulk": bulk, "updates": updated})
+        if bulk:
+            log.info("[%s] bulk AC control -> %d devices", hub.store_id, len(updated))
+
+
 async def handle_viewer_message(hub: StoreHub, ws: WebSocket, msg: dict) -> None:
     kind = msg.get("type")
 
@@ -541,40 +736,30 @@ async def handle_viewer_message(hub: StoreHub, ws: WebSocket, msg: dict) -> None
         await _send_json(ws, {"type": "pong", "ts": iso(utcnow())})
 
     elif kind == "ac_control":
-        state = dict(hub.ac_state)
-        for key in ("target_id", "power", "mode", "temp", "fan"):
-            if msg.get(key) is not None:
-                state[key] = msg[key]
+        await handle_ac_control(hub, ws, msg)
+
+    elif kind == "device_update":
         try:
-            state["target_id"] = int(state["target_id"])
-            state["power"] = 1 if int(state["power"]) else 0
-            state["mode"] = AC_MODE_NAMES[normalize_mode(state["mode"])]
-            state["fan"] = AC_FAN_NAMES[normalize_fan(state["fan"])]
-            state["temp"] = clamp_target_temp(state["temp"])
-            packet = encode_ac_packet(state["target_id"], state["power"], state["mode"],
-                                      state["temp"], state["fan"])
-        except (PacketError, KeyError, TypeError, ValueError) as exc:
-            await _send_json(ws, {"type": "error", "scope": "ac_control", "message": str(exc)})
+            dev_id = int(msg["dev_id"])
+        except (KeyError, TypeError, ValueError):
+            await _send_json(ws, {"type": "error", "scope": "device",
+                                  "message": "dev_id가 필요합니다."})
             return
-
-        delivered = await manager.to_gateway(hub, {
-            "cmd": "AC_CONTROL", "store_id": hub.store_id,
-            "packet_hex": packet.hex(), "state": state, "ts": iso(utcnow())})
-        if not delivered:
-            await _send_json(ws, {
-                "type": "error", "scope": "ac_control",
-                "message": "게이트웨이가 오프라인입니다. 명령을 전송할 수 없습니다."})
+        patch = {k: msg.get(k) for k in ("name", "location") if msg.get(k) is not None}
+        row = await asyncio.to_thread(db_update_device, hub.store_id, dev_id, patch)
+        if row is None:
             return
-
-        state["updated_at"] = iso(utcnow())
-        hub.ac_state = state
-        # Echo to every viewer so a phone and a PC stay in sync.
-        await manager.broadcast(hub, {"type": "ac_state", "state": state,
-                                      "packet_hex": packet.hex()})
+        hub.devices[dev_id] = row
+        await manager.broadcast(hub, {"type": "device_meta", "device": row})
 
     elif kind == "sota_deploy":
+        target_id = int(msg.get("target_id") or 1)
+        # Remember what was asked for; the device row is stamped once the
+        # gateway reports the deploy finished.
+        hub.sota_target = {"dev_id": target_id, "brand": msg.get("brand"),
+                           "model": msg.get("model"), "protocol": msg.get("protocol")}
         payload = {"cmd": "DEPLOY_FIRMWARE", "store_id": hub.store_id,
-                   "target_id": int(msg.get("target_id") or hub.ac_state["target_id"]),
+                   "target_id": target_id,
                    "brand": msg.get("brand"), "model": msg.get("model"),
                    "model_id": msg.get("model_id"), "protocol": msg.get("protocol"),
                    "ts": iso(utcnow())}
@@ -607,13 +792,18 @@ async def ws_live(ws: WebSocket, store_id: str = Query(DEFAULT_STORE_ID)) -> Non
     try:
         store = await asyncio.to_thread(db_store, store_id)
         points = await asyncio.to_thread(db_minute_stats, store_id, STATS_WINDOW_MINUTES)
+        # Devices the store has ever registered, so cards exist before the
+        # first packet of this session arrives.
+        for row in await asyncio.to_thread(db_devices, store_id):
+            hub.devices.setdefault(row["dev_id"], row)
         await _send_json(ws, {
             "type": "hello", "store_id": store_id,
             "store_name": (store or {}).get("name") or store_id,
             "gateway_online": hub.gateway is not None,
             "gateway_info": hub.gateway_info,
             "live_active": hub.live_active,
-            "ac_state": hub.ac_state, "latest": hub.latest,
+            "devices": hub.device_payload(),
+            "stale_seconds": DEVICE_STALE_SECONDS,
             "license": evaluate_license(store, store_id),
             "server_time": iso(utcnow()), "stats": points,
         })
@@ -653,7 +843,21 @@ async def handle_gateway_binary(hub: StoreHub, blob: bytes) -> None:
             log.warning("[%s] bad sensor packet: %s", hub.store_id, exc)
             continue
         reading["ts"] = now_ms
-        hub.latest = reading
+        dev_id = reading["dev_id"]
+        hub.latest[dev_id] = reading
+
+        # Register a device the first time we see it, and refresh last_seen at
+        # most once a minute -- a write per packet would be a dozen a second.
+        now = time.monotonic()
+        if now - hub.last_seen_written.get(dev_id, 0.0) > LAST_SEEN_WRITE_INTERVAL:
+            hub.last_seen_written[dev_id] = now
+            known = dev_id in hub.devices
+            row = await asyncio.to_thread(db_register_device, hub.store_id, dev_id)
+            hub.devices[dev_id] = row
+            if not known:
+                log.info("[%s] registered device %d (%s)", hub.store_id, dev_id, row["name"])
+                await manager.broadcast(hub, {"type": "device_meta", "device": row})
+
         await manager.broadcast(hub, {"type": "live", "data": reading})
 
 
@@ -674,11 +878,26 @@ async def handle_gateway_json(hub: StoreHub, msg: dict) -> None:
             "type": "sota_progress",
             **{k: msg.get(k) for k in ("stage", "percent", "message", "model", "ok")}})
 
+        # A finished deploy is what makes a device searchable by AC model.
+        if msg.get("stage") == "done" and hub.sota_target:
+            target = hub.sota_target
+            hub.sota_target = None
+            row = await asyncio.to_thread(
+                db_update_device, hub.store_id, target["dev_id"],
+                {k: target.get(k) for k in ("brand", "model", "protocol")})
+            if row:
+                hub.devices[target["dev_id"]] = row
+                await manager.broadcast(hub, {"type": "device_meta", "device": row})
+
     elif kind == "ac_ack":
-        if isinstance(msg.get("state"), dict):
-            hub.ac_state = {**hub.ac_state, **msg["state"], "updated_at": iso(utcnow())}
+        state = msg.get("state")
+        if isinstance(state, dict) and state.get("target_id") is not None:
+            dev_id = int(state["target_id"])
+            merged = {**hub.ac_state_for(dev_id), **state, "updated_at": iso(utcnow())}
+            hub.ac_states[dev_id] = merged
+            state = merged
         await manager.broadcast(hub, {"type": "ac_ack", "ok": msg.get("ok", True),
-                                      "state": hub.ac_state, "message": msg.get("message")})
+                                      "state": state, "message": msg.get("message")})
 
     elif kind == "gateway_status":
         hub.gateway_info = {**hub.gateway_info, **(msg.get("info") or {})}
