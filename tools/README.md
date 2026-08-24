@@ -1,8 +1,13 @@
 # Running Atom Air without hardware
 
 ```bash
-python tools/run_mock.py
+python tools/run_mock.py     # from the repo root
+python run_mock.py           # or from inside tools/
 ```
+
+Either works — the script resolves everything from its own location, so the
+working directory does not matter. (`python tools/run_mock.py` *while already in*
+`tools/` is the one thing that fails, because the shell doubles the path.)
 
 That is the whole thing. It builds the gateway, starts the cloud, the gateway and
 fake Atom Lite devices, waits until each is genuinely healthy, seeds firmware

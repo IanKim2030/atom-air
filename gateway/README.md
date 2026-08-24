@@ -53,6 +53,9 @@ topics, the 8-byte control frames and a genuine OTA download — run the gateway
 python ../tools/fake_atom.py --store-id S001 --devices 2
 ```
 
+Or let [`tools/run_mock.py`](../tools/README.md) start the cloud, the gateway and
+the devices together in one command.
+
 [`tools/fake_atom.py`](../tools/fake_atom.py) is the executable specification of
 what the ESP32 firmware must do:
 
