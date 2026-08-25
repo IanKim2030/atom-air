@@ -229,6 +229,22 @@
                          font-light active:scale-95 transition"
                   style="background:var(--surface-1)">+</button>
         </div>
+
+        <div class="flex items-baseline justify-between mt-3 mb-1.5">
+          <p class="text-xs ink2">전체 바람세기</p>
+          <span id="bulkFanNote" class="text-[11px] ink3"></span>
+        </div>
+        <div id="bulkFanGroup" class="grid grid-cols-4 gap-1.5"
+             role="group" aria-label="전체 바람세기">
+          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
+                  data-bulkfan="auto" aria-pressed="false">자동</button>
+          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
+                  data-bulkfan="low" aria-pressed="false">약</button>
+          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
+                  data-bulkfan="mid" aria-pressed="false">중</button>
+          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
+                  data-bulkfan="high" aria-pressed="false">강</button>
+        </div>
       </div>
     </div>
 
@@ -467,12 +483,33 @@ const state = {
   visible: [],          // dev_ids currently in the grid, in order
   query: "", filter: "all",
   bulkTemp: 24, bulkMixed: false, bulkTouchedUntil: 0,
+  bulkFan: "auto", bulkFanMixed: false, bulkFanTouchedUntil: 0,
   sotaTarget: 1,
   catalog: [],
   suppress: new Map(),  // dev_id -> timestamp until which echoes are ignored
 };
 
 const $ = (id) => document.getElementById(id);
+
+// The dashboard repaints twice a second. Writing a property that already holds
+// the value still replaces the text node or restyles the element, which at
+// twelve cards was ~214 DOM mutations a second and read as a flicker. These
+// make every repaint a no-op unless something actually changed.
+function setText(el, value) {
+  const v = String(value);
+  if (el.textContent !== v) el.textContent = v;
+}
+function setAttr(el, name, value) {
+  const v = String(value);
+  if (el.getAttribute(name) !== v) el.setAttribute(name, v);
+}
+function setStyle(el, prop, value) {
+  if (el.style[prop] !== value) el.style[prop] = value;
+}
+function setValue(input, value) {
+  const v = String(value);
+  if (document.activeElement !== input && input.value !== v) input.value = v;
+}
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -668,38 +705,38 @@ function paintCard(id) {
 
   const online = isOnline(dev);
   const running = isRunning(dev);
-  c.el.dataset.online = String(online);
-  c.dot.style.background = !online ? "var(--muted)"
-    : running ? "var(--good)" : "var(--axis)";
+  if (c.el.dataset.online !== String(online)) c.el.dataset.online = String(online);
+  setStyle(c.dot, "background", !online ? "var(--muted)"
+    : running ? "var(--good)" : "var(--axis)");
 
-  if (document.activeElement !== c.name) c.name.value = dev.name || `디바이스 ${id}`;
-  if (document.activeElement !== c.loc) c.loc.value = dev.location || "";
-  c.model.textContent = dev.model ? `${dev.brand ? dev.brand + " " : ""}${dev.model}`
-                                  : "모델 미등록";
+  setValue(c.name, dev.name || `디바이스 ${id}`);
+  setValue(c.loc, dev.location || "");
+  setText(c.model, dev.model ? `${dev.brand ? dev.brand + " " : ""}${dev.model}`
+                             : "모델 미등록");
 
   const r = dev.reading;
-  c.temp.textContent = online && r ? r.temp.toFixed(1) : "--";
-  c.hum.textContent = online && r ? r.hum.toFixed(0) : "--";
+  setText(c.temp, online && r ? r.temp.toFixed(1) : "--");
+  setText(c.hum, online && r ? r.hum.toFixed(0) : "--");
 
   if (!online) {
-    c.status.textContent = dev.ts ? `${Math.round((Date.now() - dev.ts) / 1000)}초째 수신 없음`
-                                  : "수신 없음";
+    setText(c.status, dev.ts ? `${Math.round((Date.now() - dev.ts) / 1000)}초째 수신 없음`
+                             : "수신 없음");
   } else if (r && r.fault) {
-    c.status.textContent = "센서 이상";
+    setText(c.status, "센서 이상");
   } else {
-    c.status.textContent = r && r.ir_ready ? "IR 준비됨" : "IR 미탑재";
+    setText(c.status, r && r.ir_ready ? "IR 준비됨" : "IR 미탑재");
   }
 
   const ac = dev.ac || {};
   const on = !!ac.power;
-  c.power.textContent = on ? "전원 켜짐" : "전원 꺼짐";
-  c.power.setAttribute("aria-pressed", String(on));
-  c.power.style.background = on ? "var(--good)" : "";
-  c.power.style.color = on ? "#ffffff" : "";
-  c.power.style.borderColor = on ? "var(--good)" : "";
-  c.setpoint.textContent = `${ac.temp ?? 24} °C`;
-  if (document.activeElement !== c.mode) c.mode.value = ac.mode || "cool";
-  if (document.activeElement !== c.fan) c.fan.value = ac.fan || "auto";
+  setText(c.power, on ? "전원 켜짐" : "전원 꺼짐");
+  setAttr(c.power, "aria-pressed", on);
+  setStyle(c.power, "background", on ? "var(--good)" : "");
+  setStyle(c.power, "color", on ? "#ffffff" : "");
+  setStyle(c.power, "borderColor", on ? "var(--good)" : "");
+  setText(c.setpoint, `${ac.temp ?? 24} °C`);
+  setValue(c.mode, ac.mode || "cool");
+  setValue(c.fan, ac.fan || "auto");
 }
 
 // ── summary ──────────────────────────────────────────────────────────
@@ -710,19 +747,19 @@ function renderSummary() {
   const running = live.filter((d) => d.reading.ac_on).length;
 
   const fmt = (v) => (v === undefined ? "--" : v.toFixed(1));
-  $("sumAvg").textContent = temps.length
-    ? fmt(temps.reduce((a, b) => a + b, 0) / temps.length) : "--";
-  $("sumMin").textContent = temps.length ? fmt(Math.min(...temps)) : "--";
-  $("sumMax").textContent = temps.length ? fmt(Math.max(...temps)) : "--";
-  $("sumOn").textContent = running;
-  $("sumTotal").textContent = devs.length;
-  $("sumMeta").textContent = devs.length
-    ? `${live.length} / ${devs.length}대 수신` : "수신 대기 중";
-  $("headDevices").textContent = `${devs.length}대`;
+  setText($("sumAvg"), temps.length
+    ? fmt(temps.reduce((a, b) => a + b, 0) / temps.length) : "--");
+  setText($("sumMin"), temps.length ? fmt(Math.min(...temps)) : "--");
+  setText($("sumMax"), temps.length ? fmt(Math.max(...temps)) : "--");
+  setText($("sumOn"), running);
+  setText($("sumTotal"), devs.length);
+  setText($("sumMeta"), devs.length
+    ? `${live.length} / ${devs.length}대 수신` : "수신 대기 중");
+  setText($("headDevices"), `${devs.length}대`);
 
   const anyOn = running > 0;
-  $("bulkPower").textContent = anyOn ? "전체 끄기" : "전체 켜기";
-  $("bulkPower").setAttribute("aria-pressed", String(anyOn));
+  setText($("bulkPower"), anyOn ? "전체 끄기" : "전체 켜기");
+  setAttr($("bulkPower"), "aria-pressed", anyOn);
 
   // Mirror the devices rather than showing a number nothing is set to. While
   // the operator is working the +/- buttons their value wins.
@@ -735,9 +772,23 @@ function renderSummary() {
         : Math.round(setpoints.reduce((a, b) => a + b, 0) / setpoints.length);
     }
   }
-  $("bulkTemp").textContent = state.bulkTemp;
-  $("bulkTempLabel").textContent = state.bulkMixed
-    ? "전체 희망온도 (기기별 상이)" : "전체 희망온도";
+  setText($("bulkTemp"), state.bulkTemp);
+  setText($("bulkTempLabel"), state.bulkMixed
+    ? "전체 희망온도 (기기별 상이)" : "전체 희망온도");
+
+  if (Date.now() > state.bulkFanTouchedUntil) {
+    const fans = devs.map((d) => d.ac && d.ac.fan).filter(Boolean);
+    if (fans.length) {
+      const distinct = new Set(fans);
+      state.bulkFanMixed = distinct.size > 1;
+      state.bulkFan = distinct.size === 1 ? fans[0] : null;
+    }
+  }
+  // With mixed fan speeds no button is pressed, so the control never claims a
+  // setting the devices are not actually on.
+  document.querySelectorAll("[data-bulkfan]").forEach((b) =>
+    setAttr(b, "aria-pressed", b.dataset.bulkfan === state.bulkFan));
+  setText($("bulkFanNote"), state.bulkFanMixed ? "기기별 상이" : "");
 }
 
 // Repaint on a timer rather than per message: at twelve devices the page takes
@@ -794,6 +845,14 @@ $("bulkDown").addEventListener("click", () => {
   state.bulkMixed = false;
   state.bulkTouchedUntil = Date.now() + 3000;
   commandBulk({ temp: state.bulkTemp });
+});
+document.querySelectorAll("[data-bulkfan]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    state.bulkFan = btn.dataset.bulkfan;
+    state.bulkFanMixed = false;
+    state.bulkFanTouchedUntil = Date.now() + 3000;
+    commandBulk({ fan: state.bulkFan });
+  });
 });
 $("bulkUp").addEventListener("click", () => {
   state.bulkTemp = Math.min(30, state.bulkTemp + 1);
