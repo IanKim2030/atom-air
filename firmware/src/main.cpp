@@ -659,6 +659,7 @@ static void performOta() {
 //   mqtt?                    show host / port / source / link state
 //   mqtt reset               drop the NVS address, back to config.h
 //   scan                     list the 2.4GHz APs this radio can actually see
+//   ir?                      is a receiver wired to IR_RX_PIN? (atom_ac only)
 static String takeToken(String &line) {
   line.trim();
   if (line.startsWith("\"")) {
@@ -720,6 +721,60 @@ static void handleScan() {
   if (WiFi.status() != WL_CONNECTED && !wifiSsid.isEmpty())
     WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 }
+
+#ifdef HAS_IR
+// ir? answers "is the receiver actually wired to IR_RX_PIN?", which is
+// otherwise invisible: a VS1838B/TSOP38238 drives its output HIGH while idle,
+// so it beats an internal pulldown. A floating pin does not. Then it listens
+// so a remote press proves the whole path, not just the DC level.
+static void handleIrProbe() {
+  if (learnActive) {
+    Serial.println("[ir] a learn session is running -- try again once it ends");
+    return;
+  }
+  Serial.printf("[ir] tx=G%d rx=G%d\n", IR_TX_PIN, IR_RX_PIN);
+
+  // No disableIRIn() here: the receiver is only armed during a learn, and
+  // calling it without a prior enableIRIn() dereferences a null timer handle
+  // and panics the chip. pinMode alone is enough to read the idle level.
+  pinMode(IR_RX_PIN, INPUT_PULLDOWN);
+  delay(20);
+  int highs = 0;
+  for (int i = 0; i < 200; i++) {
+    if (digitalRead(IR_RX_PIN)) highs++;
+    delayMicroseconds(200);
+  }
+  if (highs >= 195)
+    Serial.println("[ir] receiver detected: idle HIGH against a pulldown");
+  else if (highs <= 5)
+    Serial.printf("[ir] nothing on G%d: reads LOW, so the pin is floating "
+                  "(check OUT->G%d, VCC->3V3, GND)\n", IR_RX_PIN, IR_RX_PIN);
+  else
+    Serial.printf("[ir] G%d is unsteady (%d/200 high) -- either IR is hitting "
+                  "it right now, or the wiring is loose\n", IR_RX_PIN, highs);
+
+  Serial.println("[ir] listening 5s -- point a remote at the unit and press a button");
+  irrecv.enableIRIn();
+  decode_results results;
+  uint32_t until = millis() + 5000;
+  int frames = 0;
+  while ((int32_t)(millis() - until) < 0) {
+    if (irrecv.decode(&results)) {
+      frames++;
+      Serial.printf("[ir] captured a frame: %u timings\n",
+                    (unsigned)results.rawlen);
+      irrecv.resume();
+    }
+    delay(5);
+  }
+  irrecv.disableIRIn();   // safe: this call site enabled it a moment ago
+  if (frames == 0)
+    Serial.println("[ir] nothing captured -- no receiver, wrong pin, or no "
+                   "button was pressed");
+  else
+    Serial.printf("[ir] %d frame(s) captured -- receive path works\n", frames);
+}
+#endif
 
 static void handleSerialLine(String line) {
   line.trim();
@@ -804,6 +859,13 @@ static void handleSerialLine(String line) {
     handleScan();
     return;
   }
+
+#ifdef HAS_IR
+  if (line == "ir?") {
+    handleIrProbe();
+    return;
+  }
+#endif
 
   Serial.printf("[serial] unknown command: %s\n", line.c_str());
 }
