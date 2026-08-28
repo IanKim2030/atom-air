@@ -821,6 +821,15 @@ def db_register_device(store_id: str, dev_id: int) -> dict:
     return dict(row)
 
 
+def db_device_last_stat(store_id: str, dev_id: int) -> int | None:
+    """Newest minute-stat timestamp for one device (epoch seconds), if any."""
+    with closing(_connect()) as con:
+        row = con.execute(
+            "SELECT MAX(ts) AS ts FROM minute_stats WHERE store_id=? AND dev_id=?",
+            (store_id, dev_id)).fetchone()
+    return row["ts"] if row and row["ts"] is not None else None
+
+
 def db_delete_device(store_id: str, dev_id: int) -> bool:
     """Drop a device's registry row and its saved AC state.
 
@@ -1204,6 +1213,9 @@ def default_ac_state(dev_id: int = 1) -> dict:
 
 # How long a device may go quiet before the UI calls it offline.
 DEVICE_STALE_SECONDS = 15
+# How long a device must produce nothing at all before its card may be retired.
+# Minute stats arrive a minute at a time, so this has to clear two of them.
+DEVICE_QUIET_SECONDS = 180
 # last_seen is refreshed at most this often per device: at 12 devices x 1Hz a
 # per-packet write would be a dozen writes a second for no benefit.
 LAST_SEEN_WRITE_INTERVAL = 60.0
@@ -1756,12 +1768,19 @@ async def delete_device(store_id: str, dev_id: int, request: Request) -> dict:
 
     # A unit still publishing would re-register on its very next packet, so
     # deleting it now just makes the card blink. Say so instead of pretending.
+    # Two signals, because neither covers the other: hub.latest only fills while
+    # some viewer holds the live stream open, whereas the gateway uploads minute
+    # stats whether or not anyone is watching.
+    now_s = int(time.time())
     latest = hub.latest.get(dev_id)
-    if latest and int(time.time() * 1000) - latest["ts"] < DEVICE_STALE_SECONDS * 1000:
+    streaming = latest is not None and now_s * 1000 - latest["ts"] < DEVICE_STALE_SECONDS * 1000
+    last_stat = await asyncio.to_thread(db_device_last_stat, store_id, dev_id)
+    reporting = last_stat is not None and now_s - last_stat < DEVICE_QUIET_SECONDS
+    if streaming or reporting:
         raise HTTPException(
             status_code=409,
             detail="아직 데이터를 보내고 있는 장비입니다. 전원을 내리거나 게이트웨이에서 "
-                   "분리한 뒤 삭제하세요 — 살아 있으면 곧바로 다시 등록됩니다.")
+                   "분리하고 몇 분 기다린 뒤 삭제하세요 — 살아 있으면 곧바로 다시 등록됩니다.")
 
     removed = await asyncio.to_thread(db_delete_device, store_id, dev_id)
     if not removed and dev_id not in hub.known_device_ids():
