@@ -938,9 +938,18 @@ def db_update_device(store_id: str, dev_id: int, patch: dict) -> dict | None:
 
 # Every state combination a raw-mode device can express. An AC remote sends the
 # whole state per keypress, so each combination is one learned code ("slot").
-IR_SLOT_TEMPS = list(range(18, 31))
-IR_SLOTS = ["off"] + [f"{mode}_{t}" for mode in ("cool", "heat")
-                      for t in IR_SLOT_TEMPS]
+# One slot per remote *button*, not per state combination. An installer presses
+# nine buttons instead of stepping a remote through 27 settings, and the device
+# reaches a requested state by replaying the buttons that get it there.
+#
+# This assumes the remote sends a discrete command per button. Many AC remotes
+# instead transmit their whole state on every press -- on those, replaying the
+# "temp up" capture re-sends the temperature it was captured at rather than
+# incrementing, which the installer will see the first time they test it.
+IR_SLOTS = ["power_on", "power_off",
+            "mode_cool", "mode_heat", "mode_dry",
+            "temp_up", "temp_down",
+            "fan_up", "fan_down"]
 # Capture sanity bounds; anything outside is a mis-read, not a remote.
 IR_RAW_MIN_LEN, IR_RAW_MAX_LEN = 20, 1023
 IR_RAW_MIN_US, IR_RAW_MAX_US = 10, 65000
@@ -949,13 +958,19 @@ IR_FREQ_MIN_KHZ, IR_FREQ_MAX_KHZ = 30, 60
 RAW_PROTOCOL = "RAW"
 
 
-def slot_for_state(power: int, mode: str, temp: int) -> str | None:
-    """Map an AC command onto a learned slot key, or None if uncapturable."""
+def slots_for_state(power: int, mode: str, temp: int) -> list[str]:
+    """The buttons a device needs before it can express this state at all.
+
+    Only the unconditional ones: temp and fan are reached by repeating their
+    step buttons, and how many presses that takes depends on where the device
+    currently is, which only the device knows.
+    """
     if not power:
-        return "off"
-    if mode not in ("cool", "heat"):
-        return None
-    return f"{mode}_{min(max(int(temp), IR_SLOT_TEMPS[0]), IR_SLOT_TEMPS[-1])}"
+        return ["power_off"]
+    needed = ["power_on"]
+    if mode in ("cool", "heat", "dry"):
+        needed.append(f"mode_{mode}")
+    return needed
 
 
 def _slugify_model_id(brand: str, name: str) -> str:
@@ -2433,11 +2448,12 @@ async def apply_ac_control(hub: StoreHub, msg: dict,
                 model = await asyncio.to_thread(db_ac_model, model_id) \
                     if model_id else None
                 raw_slots_cache[model_id] = set((model or {}).get("slots") or [])
-            slot = slot_for_state(state["power"], state["mode"], state["temp"])
-            if slot is None or slot not in raw_slots_cache[model_id]:
+            needed = slots_for_state(state["power"], state["mode"], state["temp"])
+            missing = [s for s in needed if s not in raw_slots_cache[model_id]]
+            if missing:
                 errors.append(
-                    f"디바이스 {dev_id}: 이 에어컨에서 지원하지 않는 설정입니다"
-                    f" ({state['mode']} {state['temp']}°C)")
+                    f"디바이스 {dev_id}: 아직 학습되지 않은 버튼이 필요합니다"
+                    f" ({', '.join(missing)})")
                 continue
 
         if not await manager.to_gateway(hub, {

@@ -1081,6 +1081,14 @@ async function toggleAutoMode() {
 // lists live in the shared AC-model catalog, fetched once a RAW device shows up.
 function isRawDevice(d) { return d?.protocol === "RAW"; }
 
+const SLOT_LABELS = {
+  power_on: "전원 ON", power_off: "전원 OFF",
+  mode_cool: "냉방", mode_heat: "난방", mode_dry: "제습",
+  temp_up: "온도 +", temp_down: "온도 −",
+  fan_up: "바람세기 +", fan_down: "바람세기 −",
+};
+const SLOT_LABEL = (slot) => SLOT_LABELS[slot] || slot;
+
 async function ensureRawCatalog() {
   if (S.rawSlots) return;
   if (![...S.store.devices.values()].some(isRawDevice)) return;
@@ -1094,10 +1102,14 @@ async function ensureRawCatalog() {
   } catch (_) { /* the server still refuses unlearned combos */ }
 }
 
-function rawSlotFor(power, mode, temp) {
-  if (!power) return "off";
-  if (mode !== "cool" && mode !== "heat") return null;
-  return `${mode}_${Math.min(30, Math.max(18, temp || 24))}`;
+// Buttons the device needs before it can express this state at all. Temp and
+// fan are reached by repeating their step buttons, so how many presses that
+// takes depends on where the device currently sits -- only it knows that.
+function rawSlotsFor(power, mode) {
+  if (!power) return ["power_off"];
+  const needed = ["power_on"];
+  if (mode === "cool" || mode === "heat" || mode === "dry") needed.push(`mode_${mode}`);
+  return needed;
 }
 
 // Returns a user-facing message when the command cannot be expressed by the
@@ -1105,20 +1117,19 @@ function rawSlotFor(power, mode, temp) {
 // the server-side guard is the authority.
 function rawBlockMessage(d, fields) {
   if (!isRawDevice(d)) return null;
-  if (fields.fan != null && fields.power == null && fields.mode == null
-      && fields.temp == null)
-    return "이 에어컨은 바람 세기 자동만 지원합니다.";
   const slots = S.rawSlots?.[d.model_id];
   if (!slots) return null;
   const ac = d.ac_state || { power: 0, mode: "cool", temp: 24 };
   const state = { power: ac.power, mode: ac.mode, temp: ac.temp ?? 24, ...fields };
   if (!state.power && fields.power == null) state.power = 1; // implied turn-on
-  const slot = rawSlotFor(state.power ? 1 : 0, state.mode, state.temp);
-  if (slot === null)
-    return "이 에어컨은 냉방/난방만 지원합니다.";
-  if (!slots.has(slot))
-    return slot === "off" ? "이 에어컨은 전원 끄기를 지원하지 않습니다."
-      : `이 에어컨에서 지원하지 않는 설정입니다 (${MODE_LABEL[state.mode] || state.mode} ${state.temp}°C).`;
+  const missing = rawSlotsFor(state.power ? 1 : 0, state.mode)
+    .filter((slot) => !slots.has(slot));
+  if (missing.length)
+    return `아직 학습되지 않은 버튼이 필요합니다 (${missing.map(SLOT_LABEL).join(", ")}).`;
+  if (fields.temp != null && !slots.has("temp_up") && !slots.has("temp_down"))
+    return "온도 버튼이 학습되지 않았습니다.";
+  if (fields.fan != null && !slots.has("fan_up") && !slots.has("fan_down"))
+    return "바람세기 버튼이 학습되지 않았습니다.";
   return null;
 }
 
@@ -1130,13 +1141,12 @@ function remoteCmdFor(devId, fields) {
   const slots = isRawDevice(d) ? S.rawSlots?.[d.model_id] : null;
   if (out.temp === "+" || out.temp === "-") {
     const dir = out.temp === "+" ? 1 : -1;
-    let t = (ac.temp || 24) + dir;
-    if (slots && (ac.mode === "cool" || ac.mode === "heat")) {
-      // Step to the nearest learned temperature in that direction.
-      while (t >= 16 && t <= 30 && !slots.has(`${ac.mode}_${t}`)) t += dir;
-      if (t < 16 || t > 30) { toast("그 방향으로 설정 가능한 온도가 없습니다."); return; }
+    // One step per press: the device replays the temp button that many times.
+    if (slots && !slots.has(dir > 0 ? "temp_up" : "temp_down")) {
+      toast(`${dir > 0 ? "온도 +" : "온도 −"} 버튼이 학습되지 않았습니다.`);
+      return;
     }
-    out.temp = Math.min(30, Math.max(16, t));
+    out.temp = Math.min(30, Math.max(16, (ac.temp || 24) + dir));
   }
   if (out.power === "toggle") out.power = ac.power ? 0 : 1;
   devControl(devId, out);

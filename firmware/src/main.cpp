@@ -266,29 +266,19 @@ static void buildSensorPacket(uint8_t out[SENSOR_SIZE]) {
 // has written a protocol driver for works exactly as well as a common one.
 #ifdef HAS_IR
 // ── raw replay (학습 리모컨) ────────────────────────────────────────────
-// An AC remote transmits its full state per keypress, so each learned code is
-// one state combination, keyed "off" / "cool_18".."cool_30" / "heat_18"...
-static bool slotForState(uint8_t power, uint8_t mode, uint8_t temp,
-                         char out[16]) {
-  if (!power) {
-    strlcpy(out, "off", 16);
-    return true;
-  }
-  const char *m = (mode == 0) ? "cool" : (mode == 1) ? "heat" : nullptr;
-  if (m == nullptr) return false;   // dry/fan/auto are not learnable combos
-  snprintf(out, 16, "%s_%d", m, constrain(temp, 18, 30));
-  return true;
-}
+// One learned code per remote *button*. A command carries the state the user
+// wants, and this walks there from the state last applied: power, then mode,
+// then the temperature and fan steps needed to close the gap.
+//
+// That only holds for remotes that send a discrete command per button. A
+// remote that transmits its whole state on every press will re-send whatever
+// was captured instead of stepping -- visible the first time it is tested.
+static uint8_t appliedMode = 0, appliedTemp = 24, appliedFan = 0;
+static bool haveApplied = false;
 
-// Loads one slot's timings from SPIFFS and transmits them. The ArduinoJson
-// filter keeps memory at ~one code even though the file holds dozens.
-static bool sendRawSlot(uint8_t power, uint8_t mode, uint8_t temp) {
-  char slot[16];
-  if (!slotForState(power, mode, temp, slot)) {
-    Serial.printf("[ir] raw: mode %d has no learned combos — command ignored\n",
-                  mode);
-    return false;
-  }
+// Replays one slot's timings from SPIFFS. The ArduinoJson filter keeps memory
+// at ~one code even though the file holds all nine.
+static bool sendSlot(const char *slot) {
   File f = SPIFFS.open(IRDATA_PATH, FILE_READ);
   if (!f) {
     Serial.println("[ir] raw: no /irdata.json in SPIFFS — command ignored");
@@ -307,7 +297,7 @@ static bool sendRawSlot(uint8_t power, uint8_t mode, uint8_t temp) {
   }
   JsonArray arr = doc["slots"][slot];
   if (arr.isNull() || arr.size() < 20 || arr.size() > 1024) {
-    Serial.printf("[ir] raw: slot %s not learned — command ignored\n", slot);
+    Serial.printf("[ir] raw: %s not learned — skipped\n", slot);
     return false;
   }
   static uint16_t rawBuf[1024];
@@ -315,8 +305,62 @@ static bool sendRawSlot(uint8_t power, uint8_t mode, uint8_t temp) {
   for (JsonVariant v : arr) rawBuf[n++] = v.as<uint16_t>();
   uint16_t freq = doc["freq_khz"] | 38;
   irsendRaw.sendRaw(rawBuf, n, freq);
-  Serial.printf("[ir] raw: replayed %s (%u entries @ %ukHz)\n", slot, n, freq);
+  Serial.printf("[ir] raw: sent %s (%u entries @ %ukHz)\n", slot, n, freq);
+  delay(250);   // remotes need a gap between frames or the AC drops the second
   return true;
+}
+
+static const char *modeSlot(uint8_t mode) {
+  switch (mode) {                       // AC_MODES in common/protocol.py
+    case 0: return "mode_cool";
+    case 1: return "mode_heat";
+    case 2: return "mode_dry";
+    default: return nullptr;            // fan/auto have no learned button
+  }
+}
+
+// Steps one axis with its up/down button. Capped so a wrong remembered state
+// cannot turn one command into a hundred IR bursts.
+static int stepTo(int from, int to, const char *up, const char *down) {
+  int steps = to - from;
+  const char *slot = steps > 0 ? up : down;
+  int n = steps > 0 ? steps : -steps;
+  if (n > 12) n = 12;
+  for (int i = 0; i < n; i++)
+    if (!sendSlot(slot)) return i;      // unlearned button: stop, do not spin
+  return n;
+}
+
+static bool sendRawSlot(uint8_t power, uint8_t mode, uint8_t temp, uint8_t fan) {
+  if (!power) {
+    if (!sendSlot("power_off")) return false;
+    haveApplied = false;                // state is unknown again once it is off
+    return true;
+  }
+  bool sent = false;
+  if (!haveApplied) {
+    sent |= sendSlot("power_on");
+    // Nothing is known about where the AC actually sits, so drive both axes
+    // from one end: bottom out, then step up to the target.
+    appliedTemp = 18;
+    appliedFan = 0;
+    stepTo(30, 18, "temp_up", "temp_down");
+    stepTo(3, 0, "fan_up", "fan_down");
+    appliedMode = 255;                  // force the mode button below
+  }
+  const char *ms = modeSlot(mode);
+  if (ms != nullptr && mode != appliedMode) {
+    sent |= sendSlot(ms);
+    appliedMode = mode;
+  }
+  int t = constrain((int)temp, 16, 30);
+  if (stepTo(appliedTemp, t, "temp_up", "temp_down") > 0) sent = true;
+  appliedTemp = t;
+  int fs = constrain((int)fan, 0, 3);
+  if (stepTo(appliedFan, fs, "fan_up", "fan_down") > 0) sent = true;
+  appliedFan = fs;
+  haveApplied = true;
+  return sent;
 }
 
 // ── IR learn (리모컨 캡처) ──────────────────────────────────────────────
@@ -440,7 +484,7 @@ static void handleAcFrame(const uint8_t *d, size_t len) {
 
 #ifdef HAS_IR
   if (irReady) {
-    if (!sendRawSlot(power, mode, temp)) return;   // unlearned combo: skip
+    if (!sendRawSlot(power, mode, temp, fan)) return;   // nothing learned: skip
     acOn = power != 0;
     blinkAck(feedback);
     return;
