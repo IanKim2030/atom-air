@@ -6,8 +6,14 @@ gateway/*.exe~
 # the gateway service writes its state to %ProgramData%\AtomAir, not the repo
 store_data.db*
 store_license_config.json
-firmware/
 logs/
+# ...but --data-dir pointed at the repo drops staged OTA images next to the
+# firmware sources, so keep those out by name — firmware/ itself is source.
+atom_ac_*.bin
+ir_*.json
+
+# PlatformIO build output
+firmware/.pio/
 
 __pycache__/
 *.py[cod]
