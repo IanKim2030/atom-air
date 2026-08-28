@@ -295,6 +295,11 @@ class Stack:
         say("mock", f"  data  {MOCK_DIR}")
         say("mock", "  the 1-second stream starts when you open the page")
         say("mock", "  Ctrl+C to stop everything")
+        # --reload looks like the answer and is not: with the gateway holding a
+        # WebSocket open, uvicorn announces the reload and then never finishes
+        # it, so the old code keeps serving. Better a reminder than a lie.
+        say("mock", "  edited cloud/*.py? Ctrl+C and rerun -- templates are")
+        say("mock", "  re-read per request, Python code is not")
         say("mock", "=" * 58)
         print()
 
