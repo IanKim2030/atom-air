@@ -24,8 +24,22 @@ cd gateway && go build -o atomair-gateway.exe . && ./atomair-gateway.exe --store
 The gateway is a separate Go binary that installs as a Windows service on the
 store PC — see [gateway/README.md](../gateway/README.md).
 
-Open <http://127.0.0.1:8000/?store_id=S001>. `?tab=control|stats|settings` deep-links a
-mobile tab; desktop shows every panel at once.
+Open <http://127.0.0.1:8000/> and sign in (demo store: `S001` / `1234`).
+`?tab=control|stats|settings` deep-links a mobile tab; desktop shows every panel at once.
+
+## Web login & admin console
+
+| page | who | credentials |
+|---|---|---|
+| `/login` | store staff / owner (점주) | store code **or** owner id + password — an owner account opens every store it holds |
+| `/admin/login` | HQ operator | `ATOM_ADMIN_USER` / `ATOM_ADMIN_PASSWORD` (default `admin` / `admin123!`) |
+| `/admin` | HQ operator | store registration, subscription state, password resets, SOTA equipment upgrades |
+
+Sessions are HttpOnly cookies held in memory (24 h TTL); a server restart just re-prompts
+login. Store staff see only their own store; an admin can open any store's dashboard via
+`/?store_id=`. `/ws/live` enforces the same rule, so the dashboard needs a login. Stores
+migrated from a pre-login database get the default store password (`ATOM_DEFAULT_STORE_PASSWORD`,
+default `1234`) — reset it from the admin console.
 
 ## On-demand live stream
 
@@ -46,13 +60,24 @@ reachable.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/` | the hybrid web UI (re-read per request, so HTML edits need no restart) |
-| `WS` | `/ws/live?store_id=` | browser channel |
+| `GET` | `/` | the hybrid web UI — needs a session, else redirects to `/login` |
+| `GET` | `/login` · `/admin/login` · `/admin` | login pages + admin console |
+| `WS` | `/ws/live?store_id=` | browser channel (session cookie required) |
 | `WS` | `/ws/gateway/{store_id}?token=` | store gateway channel |
+| `POST` | `/api/v1/auth/login` · `/api/v1/auth/admin/login` · `/api/v1/auth/logout` | session management |
+| `GET` | `/api/v1/auth/me` | who am I (role + store) |
 | `POST` | `/api/v1/store/authorize` | daily licence check + dynamic grace period |
-| `POST` | `/api/v1/stores/{id}/license` | operator: set state / grace days / expiry |
+| `GET` | `/api/v1/admin/stores` | admin: every store + licence, gateway, device count |
+| `POST` | `/api/v1/admin/stores` | admin: register a store (id, name, password, terms) |
+| `POST` | `/api/v1/admin/stores/{id}/password` | admin: reset a store's web password |
+| `POST` | `/api/v1/admin/stores/{id}/sota` | admin: kick a firmware deploy over the gateway socket |
+| `POST` | `/api/v1/stores/{id}/license` | admin: set state / grace days / expiry / plan / owner |
+| `GET` | `/api/v1/stores/{id}/history` | audit trail for one store (`?category=&limit=`) |
+| `POST` | `/api/v1/stores/{id}/settings` | store-wide prefs (AI auto-temp), audited |
+| `GET` | `/api/v1/admin/history` | audit trail across all stores |
+| `GET`·`POST` | `/api/v1/admin/owners` | owner (점주) accounts — one login, many stores |
 | `GET` | `/api/v1/stores/{id}/stats?minutes=` | 1-minute statistics |
-| `GET` | `/api/v1/stores/{id}/status` | gateway online, viewers, AC state, licence |
+| `GET` | `/api/v1/stores/{id}/status` | gateway online, viewers, AC state, licence, SOTA progress |
 | `GET` | `/api/v1/ac/models` | AC brand/model catalog for the SOTA popup |
 | `GET` | `/healthz` | liveness |
 
@@ -102,6 +127,9 @@ cd gateway && go test ./...                 # gateway side
 | `ATOM_CLOUD_DB` | `cloud/cloud.db` | |
 | `ATOM_DEFAULT_STORE_ID` | `S001` | |
 | `ATOM_GRACE_DAYS` | `30` | grace window for newly seeded stores |
+| `ATOM_ADMIN_USER` | `admin` | **change this before deploying** |
+| `ATOM_ADMIN_PASSWORD` | `admin123!` | **change this before deploying** |
+| `ATOM_DEFAULT_STORE_PASSWORD` | `1234` | seeded/migrated stores only; new stores set one at registration |
 
 ## Chart conventions
 

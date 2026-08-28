@@ -1,1348 +1,1473 @@
-<!doctype html>
-<html lang="ko" data-theme="light">
+<!DOCTYPE html>
+<html lang="ko" class="dark">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#fcfcfb">
-<title>Atom Air · 매장 환경 관제</title>
-<script src="https://cdn.tailwindcss.com/3.4.1"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<style>
-  /* ---- design tokens -------------------------------------------------
-     Light values on bare :root; dark values declared under BOTH the media
-     query (OS setting) and the [data-theme] scope (explicit toggle), so the
-     toggle wins in either direction.                                    */
-  :root {
-    color-scheme: light;
-    --page:        #f9f9f7;
-    --surface-1:   #fcfcfb;
-    --surface-2:   #f1f0ec;
-    --text-primary:   #0b0b0b;
-    --text-secondary: #52514e;
-    --muted:       #898781;
-    --grid:        #e1e0d9;
-    --axis:        #c3c2b7;
-    --border:      rgba(11,11,11,.10);
-    --shadow:      0 1px 2px rgba(11,11,11,.05), 0 8px 24px rgba(11,11,11,.04);
-    /* categorical slots 1-2 (validated all-pairs, light surface) */
-    --series-hum:   #2a78d6;   /* slot 1 blue   */
-    --series-temp:  #eb6834;   /* slot 2 orange */
-    --series-temp-wash:  rgba(235,104,52,.10);
-    --series-hum-wash:   rgba(42,120,214,.10);
-    /* status (fixed, never themed) */
-    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
-    /* neutral UI accent for toggles -- deliberately not a series hue */
-    --ui-accent: #0b0b0b;
-    --ui-accent-ink: #fcfcfb;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --page:        #0d0d0d;
-      --surface-1:   #1a1a19;
-      --surface-2:   #232322;
-      --text-primary:   #ffffff;
-      --text-secondary: #c3c2b7;
-      --muted:       #898781;
-      --grid:        #2c2c2a;
-      --axis:        #383835;
-      --border:      rgba(255,255,255,.10);
-      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
-      --series-hum:   #3987e5;
-      --series-temp:  #d95926;
-      --series-temp-wash: rgba(217,89,38,.14);
-      --series-hum-wash:  rgba(57,135,229,.14);
-      --ui-accent: #ffffff;
-      --ui-accent-ink: #0d0d0d;
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#090d16">
+  <title>매장 관제 센터 | Atom Air Store Portal</title>
+
+  <script>
+    /* Filled in by the server from the login session. */
+    window.__ATOM__ = { store_id: "%%STORE_ID%%" };
+  </script>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {
+        colors: {
+          brand: { 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' },
+          appBg: '#090d16', cardBg: '#111827'
+        },
+        fontFamily: {
+          sans: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+          mono: ['JetBrains Mono', 'Consolas', 'monospace']
+        }
+      } }
     }
-  }
-  :root[data-theme="dark"] {
-    color-scheme: dark;
-    --page:        #0d0d0d;
-    --surface-1:   #1a1a19;
-    --surface-2:   #232322;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --muted:       #898781;
-    --grid:        #2c2c2a;
-    --axis:        #383835;
-    --border:      rgba(255,255,255,.10);
-    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
-    --series-hum:   #3987e5;
-    --series-temp:  #d95926;
-    --series-temp-wash: rgba(217,89,38,.14);
-    --series-hum-wash:  rgba(57,135,229,.14);
-    --ui-accent: #ffffff;
-    --ui-accent-ink: #0d0d0d;
-  }
+  </script>
 
-  html, body { background: var(--page); color: var(--text-primary); }
-  body { font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
-         -webkit-tap-highlight-color: transparent; }
-  .tnum { font-variant-numeric: tabular-nums; }
-  .card { background: var(--surface-1); border: 1px solid var(--border);
-          border-radius: 16px; box-shadow: var(--shadow); }
-  .ink  { color: var(--text-primary); }
-  .ink2 { color: var(--text-secondary); }
-  .ink3 { color: var(--muted); }
-  .hair { border-color: var(--border); }
-
-  /* Mobile: one panel at a time, driven by the bottom nav — the column
-     wrappers collapse so panels are laid out directly by <main>.
-     Desktop: two columns, every panel visible at once. */
-  .panel { display: none; }
-  .panel.is-active { display: block; }
-  .col { display: contents; }
-  @media (min-width: 768px) {
-    .panel { display: block !important; }
-    .col { display: flex; flex-direction: column; gap: 1.25rem; }
-  }
-
-  /* Chart containers are sized to include the x-axis band, never cropping it. */
-  .plot-tall { position: relative; height: 208px; }
-
-  /* The default surface lives on the class, not inline — an inline background
-     would outrank the pressed state and make the active label unreadable. */
-  .seg { background: var(--surface-2); color: var(--text-primary);
-         transition: background-color .15s, color .15s, border-color .15s; }
-  .seg[aria-pressed="true"] { background: var(--ui-accent); color: var(--ui-accent-ink);
-                              border-color: var(--ui-accent); }
-  .navbtn[aria-current="page"] { color: var(--text-primary); }
-  .navbtn[aria-current="page"] .navdot { opacity: 1; }
-
-  /* Name and location edit in place: they look like text until focused. */
-  .inline-edit { background: transparent; border: 1px solid transparent;
-                 border-radius: 6px; padding: 1px 4px; margin-left: -4px;
-                 min-width: 0; width: 100%; }
-  .inline-edit:hover { border-color: var(--border); }
-  .inline-edit:focus { outline: none; background: var(--surface-2);
-                       border-color: var(--ui-accent); }
-  .inline-edit::placeholder { color: var(--muted); }
-
-  .devcard[data-online="false"] { opacity: .62; }
-  .devcard[data-online="false"] .needs-online { pointer-events: none; opacity: .5; }
-
-  select { background: var(--surface-2); color: var(--text-primary); }
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: var(--axis); border-radius: 8px; }
-</style>
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    body {
+      font-family: 'Pretendard', sans-serif;
+      background: radial-gradient(circle at 50% 0%, #171e33 0%, #090d16 65%);
+      min-height: 100vh; color: #f1f5f9;
+    }
+    .glass-panel {
+      background: rgba(17, 24, 39, 0.82);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .glass-panel-glow {
+      background: rgba(17, 24, 39, 0.88);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      box-shadow: 0 0 25px -5px rgba(99, 102, 241, 0.2);
+    }
+    .touch-btn { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
+    .touch-btn:active { transform: scale(0.96); }
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+    .custom-scroll::-webkit-scrollbar-thumb { background: rgba(71, 85, 105, 0.6); border-radius: 9999px; }
+    .pulse-online { box-shadow: 0 0 10px rgba(52, 211, 153, 0.6); }
+    .dev-offline { opacity: .55; }
+    .dev-offline .needs-online { pointer-events: none; opacity: .5; }
+    .restricted .needs-license { pointer-events: none; opacity: .45; }
+    /* card drag-reorder: the handle must own the gesture, or mobile scroll wins */
+    .drag-handle { cursor: grab; touch-action: none; }
+    .drag-active { opacity: .75; outline: 2px dashed rgba(129, 140, 248, .7);
+                   outline-offset: 3px; transform: scale(.98); z-index: 10; }
+    /* in-card slide panel (통계/리모컨 토글): covers the controls area only
+       (the header with name/location stays visible). It rises from the line
+       just above the button row and sinks back down when toggled off. */
+    .card-panel {
+      position: absolute; inset: 0; z-index: 20;
+      transform: translateY(105%);
+      /* the iOS-sheet curve: brisk lift-off, long soft landing */
+      transition: transform .5s cubic-bezier(0.32, 0.72, 0, 1);
+      background: rgba(9, 13, 22, .97);
+      border: 1px solid rgba(99, 102, 241, .35); border-radius: 1rem;
+      padding: .6rem .75rem; overflow: hidden;  /* content is sized to fit */
+      box-shadow: 0 -14px 32px -14px rgba(0, 0, 0, .6);  /* lifted top edge */
+    }
+    .card-panel.open { transform: translateY(0); }
+    /* the panel's own content drifts in with a slight stagger once it lands */
+    .card-panel > * {
+      opacity: 0; transform: translateY(12px);
+      transition: opacity .35s ease, transform .45s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .card-panel.open > * { opacity: 1; transform: translateY(0); }
+    .card-panel.open > *:nth-child(1) { transition-delay: .10s; }
+    .card-panel.open > *:nth-child(2) { transition-delay: .17s; }
+    .card-panel.open > *:nth-child(3) { transition-delay: .24s; }
+    .card-panel.open > *:nth-child(4) { transition-delay: .31s; }
+    .card-panel.open > *:nth-child(5) { transition-delay: .38s; }
+    /* depth: while the sheet is up, the controls underneath recede */
+    [data-zone] > :not(.card-panel) {
+      transition: transform .5s cubic-bezier(0.32, 0.72, 0, 1),
+                  opacity .5s ease, filter .5s ease;
+      transform-origin: 50% 100%;
+    }
+    .panel-open > :not(.card-panel) {
+      transform: scale(.965); opacity: .38; filter: blur(2px) saturate(.75);
+    }
+  </style>
 </head>
+<body class="flex flex-col min-h-screen custom-scroll selection:bg-brand-500 selection:text-white">
 
-<body class="min-h-screen">
+<!-- ══ HEADER ══════════════════════════════════════════════════════════ -->
+<header class="sticky top-0 z-40 bg-appBg/90 backdrop-blur-lg border-b border-indigo-500/20 px-4 md:px-8 py-3">
+  <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
 
-<!-- ══ header ══════════════════════════════════════════════════════════ -->
-<header class="sticky top-0 z-30 backdrop-blur border-b hair"
-        style="background:color-mix(in srgb, var(--page) 88%, transparent)">
-  <div class="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
-    <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-2">
-        <h1 id="storeName" class="text-base md:text-lg font-semibold truncate">매장 연결 중…</h1>
-        <span id="livePill"
-              class="hidden shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium"
-              style="background:var(--series-temp-wash); color:var(--text-secondary)">
-          <span class="w-1.5 h-1.5 rounded-full" style="background:var(--series-temp)"></span>
-          LIVE 1s
-        </span>
+    <div class="flex items-center space-x-3 min-w-0">
+      <div class="w-10 h-10 shrink-0 rounded-2xl bg-gradient-to-tr from-brand-600 via-indigo-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-brand-500/25">
+        <i data-lucide="fan" class="w-6 h-6"></i>
       </div>
-      <p class="text-xs ink3 mt-0.5 truncate">
-        <span id="storeId">—</span> · <span id="headDevices">— 대</span>
-        · <span id="serverClock" class="tnum">—</span>
-      </p>
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <h1 id="portal-title" class="text-lg font-bold text-white tracking-tight truncate">연결 중…</h1>
+          <span id="live-pill" class="hidden shrink-0 items-center gap-1.5 text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/30">● LIVE 1s</span>
+        </div>
+        <p id="portal-sub" class="text-[11px] text-slate-400 truncate">온·습도 실시간 모니터링, 전체 온도/모드/팬 일괄 제어</p>
+      </div>
     </div>
 
-    <div id="connPill" class="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border hair">
-      <svg id="connIcon" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-        <circle cx="6" cy="6" r="4" fill="var(--muted)"></circle>
-      </svg>
-      <span id="connText" class="ink2">연결 중</span>
-    </div>
+    <div class="flex items-center gap-2.5 flex-wrap">
+      <div id="viewmode-wrap" class="hidden p-1 bg-slate-900 rounded-xl border border-slate-800 items-center text-xs font-bold">
+        <button onclick="setViewMode('SINGLE')" id="btn-mode-single" class="touch-btn px-3 py-1.5 rounded-lg bg-brand-600 text-white shadow">개별 매장 상세</button>
+        <button onclick="setViewMode('ALL')" id="btn-mode-all" class="touch-btn px-3 py-1.5 rounded-lg text-slate-400 hover:text-white">내 전체 매장 한눈에</button>
+      </div>
 
-    <button id="themeBtn" class="rounded-full p-2 border hair" title="테마 전환" aria-label="테마 전환">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" aria-hidden="true">
-        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
-      </svg>
-    </button>
+      <div id="store-select-wrapper" class="relative hidden">
+        <select id="header-store-select" onchange="selectStore(this.value)"
+                class="bg-slate-900 border border-slate-700 text-xs text-white font-bold rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 cursor-pointer"></select>
+      </div>
+
+      <div id="conn-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+        <span id="conn-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+        <span id="conn-text" class="text-slate-400 font-medium">연결 중</span>
+      </div>
+
+      <a id="admin-link" href="/admin" class="hidden touch-btn px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-purple-300 hover:text-white text-xs font-bold transition items-center gap-1 border border-purple-500/30">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5"></i><span class="hidden md:inline">관리자</span>
+      </a>
+
+      <button onclick="openAccountModal()" id="account-btn" class="hidden touch-btn px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-bold transition items-center gap-1 border border-slate-700" title="정보 수정">
+        <i data-lucide="user-cog" class="w-3.5 h-3.5"></i><span class="hidden md:inline">정보 수정</span>
+      </button>
+
+      <button onclick="logout()" class="touch-btn p-2 rounded-xl bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white transition border border-slate-700" title="로그아웃">
+        <i data-lucide="log-out" class="w-4 h-4"></i>
+      </button>
+    </div>
   </div>
 </header>
 
-<main class="mx-auto max-w-7xl px-4 pt-4 pb-28 md:pb-8 md:flex md:gap-5 md:items-start">
-  <div class="col md:flex-1 md:min-w-0">
-
-  <!-- ══ 기기 ═════════════════════════════════════════════════════════ -->
-  <section id="panel-devices" class="panel is-active space-y-4">
-
-    <!-- store summary -->
-    <div class="card p-4">
-      <div class="flex items-baseline justify-between mb-1">
-        <h2 class="text-sm font-semibold">매장 요약</h2>
-        <span id="sumMeta" class="text-xs ink3">수신 대기 중</span>
-      </div>
-
-      <div class="text-center py-3">
-        <div class="flex items-start justify-center">
-          <span id="sumAvg" class="text-5xl font-semibold tnum leading-none">--</span>
-          <span class="text-lg ink3 mt-1">°C</span>
-        </div>
-        <p class="text-xs ink3 mt-1.5">평균 실내온도</p>
-      </div>
-
-      <div class="grid grid-cols-3 gap-2 text-center">
-        <div class="rounded-xl py-2" style="background:var(--surface-2)">
-          <p class="text-[11px] ink3">최저</p>
-          <p id="sumMin" class="text-base font-medium tnum">--</p>
-        </div>
-        <div class="rounded-xl py-2" style="background:var(--surface-2)">
-          <p class="text-[11px] ink3">최고</p>
-          <p id="sumMax" class="text-base font-medium tnum">--</p>
-        </div>
-        <div class="rounded-xl py-2" style="background:var(--surface-2)">
-          <p class="text-[11px] ink3">가동 중</p>
-          <p class="text-base font-medium tnum">
-            <span id="sumOn">0</span><span class="ink3 text-xs"> / <span id="sumTotal">0</span></span>
-          </p>
-        </div>
-      </div>
-
-      <!-- bulk control: temperature and power only -->
-      <div class="mt-4 pt-4 border-t hair">
-        <p class="text-xs ink2 mb-2">전체 제어</p>
-        <button id="bulkPower"
-                class="w-full rounded-xl py-3 text-sm font-semibold border hair seg">
-          전체 켜기
-        </button>
-        <div class="mt-2 flex items-center justify-between gap-3 rounded-xl p-2.5"
-             style="background:var(--surface-2)">
-          <button id="bulkDown" aria-label="전체 희망온도 낮춤"
-                  class="w-11 h-11 rounded-full border hair grid place-items-center text-xl
-                         font-light active:scale-95 transition"
-                  style="background:var(--surface-1)">−</button>
-          <div class="text-center">
-            <div class="flex items-start justify-center">
-              <span id="bulkTemp" class="text-3xl font-semibold tnum leading-none">24</span>
-              <span class="text-sm ink3">°C</span>
-            </div>
-            <p id="bulkTempLabel" class="text-[11px] ink3 mt-0.5">전체 희망온도</p>
-          </div>
-          <button id="bulkUp" aria-label="전체 희망온도 높임"
-                  class="w-11 h-11 rounded-full border hair grid place-items-center text-xl
-                         font-light active:scale-95 transition"
-                  style="background:var(--surface-1)">+</button>
-        </div>
-
-        <div class="flex items-baseline justify-between mt-3 mb-1.5">
-          <p class="text-xs ink2">전체 바람세기</p>
-          <span id="bulkFanNote" class="text-[11px] ink3"></span>
-        </div>
-        <div id="bulkFanGroup" class="grid grid-cols-4 gap-1.5"
-             role="group" aria-label="전체 바람세기">
-          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
-                  data-bulkfan="auto" aria-pressed="false">자동</button>
-          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
-                  data-bulkfan="low" aria-pressed="false">약</button>
-          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
-                  data-bulkfan="mid" aria-pressed="false">중</button>
-          <button class="seg rounded-xl border hair py-2 text-xs font-medium"
-                  data-bulkfan="high" aria-pressed="false">강</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- search + filters -->
-    <div class="space-y-2">
-      <div class="relative">
-        <svg class="absolute left-3 top-1/2 -translate-y-1/2" width="15" height="15"
-             viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2"
-             stroke-linecap="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
-        </svg>
-        <input id="search" type="search" autocomplete="off"
-               placeholder="이름 · 모델 · 위치 검색"
-               class="w-full rounded-xl border hair pl-9 pr-3 py-2.5 text-sm"
-               style="background:var(--surface-1)">
-      </div>
-      <div class="flex gap-1.5 overflow-x-auto pb-0.5" role="group" aria-label="필터">
-        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
-                data-filter="all" aria-pressed="true">전체</button>
-        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
-                data-filter="on" aria-pressed="false">가동중</button>
-        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
-                data-filter="off" aria-pressed="false">꺼짐</button>
-        <button class="seg shrink-0 rounded-lg border hair px-3 py-1.5 text-xs"
-                data-filter="offline" aria-pressed="false">오프라인</button>
-      </div>
-    </div>
-
-    <!-- device grid -->
-    <div id="deviceGrid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"></div>
-    <p id="gridEmpty" class="text-xs ink3 text-center py-8">
-      디바이스를 기다리는 중입니다.
-    </p>
-  </section>
-
-  <!-- ══ 통계 ═════════════════════════════════════════════════════════ -->
-  <section id="panel-stats" class="panel space-y-4">
-    <div class="card p-4">
-      <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h2 class="text-sm font-semibold">실내온도 · 1분 통계</h2>
-          <p class="text-xs ink3 mt-0.5">매장 전체 디바이스 평균, 음영은 분내 최저–최고 범위</p>
-        </div>
-        <div class="flex items-center gap-1.5">
-          <div class="flex rounded-lg border hair overflow-hidden" role="group" aria-label="기간">
-            <button class="seg px-2.5 py-1 text-xs" data-range="60" aria-pressed="false">1시간</button>
-            <button class="seg px-2.5 py-1 text-xs" data-range="180" aria-pressed="true">3시간</button>
-            <button class="seg px-2.5 py-1 text-xs" data-range="720" aria-pressed="false">12시간</button>
-          </div>
-          <button id="tableBtn" class="seg rounded-lg border hair px-2.5 py-1 text-xs"
-                  aria-pressed="false">표</button>
-        </div>
-      </div>
-      <div class="plot-tall mt-3"><canvas id="statsTempChart"></canvas></div>
-      <p id="statsEmpty" class="text-xs ink3 text-center py-6">
-        아직 집계된 1분 통계가 없습니다. 게이트웨이가 첫 1분을 채우면 표시됩니다.
-      </p>
-    </div>
-
-    <div class="card p-4">
-      <h2 class="text-sm font-semibold">습도 · 1분 통계</h2>
-      <p class="text-xs ink3 mt-0.5 mb-2">매장 전체 디바이스 평균</p>
-      <div class="plot-tall"><canvas id="statsHumChart"></canvas></div>
-    </div>
-
-    <!-- accessible fallback: the same numbers as text -->
-    <div id="tableWrap" class="card p-4 hidden">
-      <h2 class="text-sm font-semibold mb-2">1분 통계 표</h2>
-      <div class="overflow-x-auto -mx-1 px-1">
-        <table class="w-full text-xs tnum border-collapse">
-          <thead>
-            <tr class="text-left ink2">
-              <th class="py-2 pr-3 font-medium">시각</th>
-              <th class="py-2 pr-3 font-medium">온도 평균</th>
-              <th class="py-2 pr-3 font-medium">최저</th>
-              <th class="py-2 pr-3 font-medium">최고</th>
-              <th class="py-2 pr-3 font-medium">습도 평균</th>
-              <th class="py-2 font-medium">표본</th>
-            </tr>
-          </thead>
-          <tbody id="tableBody" class="ink"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-  </div>
-
-  <div class="col md:w-[340px] md:shrink-0">
-  <!-- ══ 설정 ═════════════════════════════════════════════════════════ -->
-  <section id="panel-settings" class="panel space-y-4">
-    <div class="card p-4">
-      <h2 class="text-sm font-semibold mb-3">라이선스</h2>
-      <div id="licenseBox" class="rounded-xl p-3 flex items-start gap-2.5"
-           style="background:var(--surface-2)">
-        <svg id="licIcon" width="16" height="16" viewBox="0 0 24 24" fill="none"
-             stroke="var(--muted)" stroke-width="2" stroke-linecap="round"
-             class="mt-0.5 shrink-0" aria-hidden="true">
-          <circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/>
-        </svg>
-        <div class="min-w-0">
-          <p id="licStatus" class="text-sm font-medium">확인 중</p>
-          <p id="licDetail" class="text-xs ink2 mt-0.5 break-words">—</p>
-        </div>
-      </div>
-      <dl class="mt-3 text-xs space-y-1.5">
-        <div class="flex justify-between gap-3">
-          <dt class="ink3">유예기간</dt><dd id="licGrace" class="tnum">—</dd></div>
-        <div class="flex justify-between gap-3">
-          <dt class="ink3">만료일</dt><dd id="licExpiry" class="tnum">—</dd></div>
-      </dl>
-    </div>
-
-    <div class="card p-4">
-      <h2 class="text-sm font-semibold mb-3">게이트웨이</h2>
-      <dl class="text-xs space-y-1.5">
-        <div class="flex justify-between gap-3">
-          <dt class="ink3">상태</dt><dd id="gwState">—</dd></div>
-        <div class="flex justify-between gap-3">
-          <dt class="ink3">라이브 스트림</dt><dd id="gwLive">중지</dd></div>
-        <div class="flex justify-between gap-3">
-          <dt class="ink3">MQTT</dt><dd id="gwMqtt">—</dd></div>
-        <div class="flex justify-between gap-3">
-          <dt class="ink3">수신 패킷</dt><dd id="gwPackets" class="tnum">0</dd></div>
-      </dl>
-    </div>
-
-    <div class="card p-4">
-      <h2 class="text-sm font-semibold mb-1">전송한 AC 패킷</h2>
-      <p class="text-xs ink3 mb-2">8바이트 제어 프레임 (0x55 … 0xEE)</p>
-      <ul id="packetLog" class="text-[11px] tnum space-y-1 ink2">
-        <li class="ink3">아직 전송한 명령이 없습니다.</li>
-      </ul>
-    </div>
-  </section>
-  </div>
-</main>
-
-<!-- ══ bottom nav (mobile only) ═══════════════════════════════════════ -->
-<nav class="md:hidden fixed bottom-0 inset-x-0 z-30 border-t hair"
-     style="background:var(--surface-1); padding-bottom:env(safe-area-inset-bottom)">
-  <div class="grid grid-cols-3">
-    <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="devices"
-            aria-current="page">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" aria-hidden="true">
-        <rect x="3" y="4" width="8" height="7" rx="2"/><rect x="13" y="4" width="8" height="7" rx="2"/>
-        <rect x="3" y="13" width="8" height="7" rx="2"/><rect x="13" y="13" width="8" height="7" rx="2"/></svg>
-      <span class="text-[11px]">기기</span>
-      <span class="navdot w-1 h-1 rounded-full opacity-0" style="background:var(--text-primary)"></span>
-    </button>
-    <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="stats">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" aria-hidden="true">
-        <path d="M5 20V10"/><path d="M12 20V4"/><path d="M19 20v-6"/></svg>
-      <span class="text-[11px]">통계</span>
-      <span class="navdot w-1 h-1 rounded-full opacity-0" style="background:var(--text-primary)"></span>
-    </button>
-    <button class="navbtn py-2.5 flex flex-col items-center gap-1 ink3" data-panel="settings">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.5-2.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4Z"/></svg>
-      <span class="text-[11px]">설정</span>
-      <span class="navdot w-1 h-1 rounded-full opacity-0" style="background:var(--text-primary)"></span>
-    </button>
-  </div>
-</nav>
-
-<!-- ══ SOTA modal ═════════════════════════════════════════════════════ -->
-<div id="sotaModal" class="fixed inset-0 z-50 hidden items-end md:items-center justify-center p-0 md:p-6"
-     role="dialog" aria-modal="true" aria-labelledby="sotaTitle">
-  <div id="sotaBackdrop" class="absolute inset-0" style="background:rgba(0,0,0,.5)"></div>
-  <div class="card relative w-full md:max-w-md p-5 rounded-b-none md:rounded-2xl">
-    <div class="flex items-start justify-between gap-3">
-      <div>
-        <h2 id="sotaTitle" class="text-base font-semibold">에어컨 모델 선택</h2>
-        <p class="text-xs ink3 mt-1">
-          <span id="sotaTargetName" class="ink2 font-medium">—</span>에 로컬 HTTP OTA로
-          IR 제어 펌웨어를 배포합니다 (약 5초).
-        </p>
-      </div>
-      <button id="sotaClose" class="rounded-full p-1.5 border hair" aria-label="닫기">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          <path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-      </button>
-    </div>
-
-    <div class="mt-4 space-y-3">
-      <label class="block">
-        <span class="text-xs ink2">제조사</span>
-        <select id="brandSel" class="mt-1 w-full rounded-xl border hair px-3 py-2.5 text-sm"></select>
-      </label>
-      <label class="block">
-        <span class="text-xs ink2">모델</span>
-        <select id="modelSel" class="mt-1 w-full rounded-xl border hair px-3 py-2.5 text-sm"></select>
-      </label>
-    </div>
-
-    <div id="sotaProgressWrap" class="mt-4 hidden">
-      <div class="flex justify-between text-xs mb-1.5">
-        <span id="sotaStage" class="ink2">준비 중</span>
-        <span id="sotaPct" class="tnum ink2">0%</span>
-      </div>
-      <div class="h-2 rounded-full overflow-hidden" style="background:var(--surface-2)">
-        <div id="sotaBar" class="h-full rounded-full transition-all duration-500"
-             style="width:0%; background:var(--series-hum)"></div>
-      </div>
-      <p id="sotaMsg" class="text-xs ink3 mt-2 break-words">—</p>
-    </div>
-
-    <button id="sotaDeploy"
-            class="mt-5 w-full rounded-xl py-3 text-sm font-semibold"
-            style="background:var(--ui-accent); color:var(--ui-accent-ink)">
-      배포 시작
-    </button>
+<!-- LICENSE BANNER -->
+<div id="license-banner" class="hidden border-b px-4 py-2.5 text-center text-xs sm:text-sm backdrop-blur">
+  <div class="max-w-7xl mx-auto flex items-center justify-center gap-2 font-medium">
+    <i data-lucide="alert-triangle" class="w-4 h-4 shrink-0"></i>
+    <span id="license-banner-text"></span>
   </div>
 </div>
 
-<div id="toasts" class="fixed z-50 bottom-20 md:bottom-6 right-4 left-4 md:left-auto
-                        md:w-80 space-y-2 pointer-events-none"></div>
+<!-- ══ MAIN ════════════════════════════════════════════════════════════ -->
+<main class="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 space-y-6">
+
+  <!-- VIEW A: ALL STORES -->
+  <section id="section-all-stores" class="space-y-6 hidden">
+    <div class="glass-panel rounded-3xl p-5 md:p-6 border border-slate-800 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center gap-2">
+            <i data-lucide="building" class="w-5 h-5 text-indigo-400"></i>
+            <span>내 소유 매장 종합 운영 현황</span>
+          </h2>
+          <p class="text-xs text-slate-400">보유하신 모든 매장의 상태를 한눈에 보고 일괄 제어합니다. (30초마다 자동 갱신)</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="batchAllStores('OFF')" class="touch-btn px-3.5 py-2 bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
+            <i data-lucide="power-off" class="w-4 h-4"></i><span>전체 매장 에어컨 일괄 끄기</span>
+          </button>
+          <button onclick="batchAllStores('AUTO_ON')" class="touch-btn px-3.5 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow">
+            <i data-lucide="sparkles" class="w-4 h-4"></i><span>전체 매장 쾌적 자동 켜기</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="all-stores-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"></div>
+  </section>
+
+  <!-- VIEW B: SINGLE STORE -->
+  <section id="section-single-store" class="space-y-6">
+
+    <div id="single-wrap" class="glass-panel rounded-3xl p-5 md:p-6 shadow-xl relative overflow-hidden space-y-5">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="space-y-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h2 class="text-xl md:text-2xl font-black text-white truncate" id="single-store-name">—</h2>
+            <span id="single-sub-badge" class="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-700/40 text-slate-300 border border-slate-600/40">—</span>
+          </div>
+          <p class="text-xs text-slate-400 truncate" id="single-store-desc">—</p>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 w-full lg:w-auto">
+          <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-3 text-center min-w-[96px]">
+            <span class="text-[11px] text-slate-400 block mb-1">설치 장비</span>
+            <div class="text-xl font-black text-white font-mono" id="stat-sensors">—</div>
+          </div>
+          <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-3 text-center min-w-[96px]">
+            <span class="text-[11px] text-slate-400 block mb-1">평균 실내온도</span>
+            <div class="text-xl font-black text-indigo-400 font-mono" id="stat-avg-temp">—</div>
+          </div>
+          <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-3 text-center min-w-[96px]">
+            <span class="text-[11px] text-slate-400 block mb-1">평균 실내습도</span>
+            <div class="text-xl font-black text-cyan-400 font-mono" id="stat-avg-hum">—</div>
+          </div>
+          <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-3 text-center min-w-[96px]">
+            <span class="text-[11px] text-slate-400 block mb-1">에어컨 가동</span>
+            <div class="text-xl font-black text-emerald-400 font-mono" id="stat-ac-running">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BATCH CONTROL -->
+      <div class="pt-4 border-t border-slate-800/90 grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+        <div class="bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800 space-y-2.5 flex flex-col justify-between needs-license">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-white flex items-center gap-1.5">
+              <i data-lucide="power" class="w-4 h-4 text-emerald-400"></i>전체 전원 &amp; AI 자동
+            </span>
+            <span class="text-[10px] text-slate-400">일괄 적용</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="batchControl({power:1})" class="touch-btn flex-1 py-2.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 text-emerald-300 hover:text-white font-bold flex items-center justify-center gap-1">
+              <i data-lucide="power" class="w-3.5 h-3.5"></i> 전체 ON
+            </button>
+            <button onclick="batchControl({power:0})" class="touch-btn flex-1 py-2.5 rounded-xl bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white font-bold flex items-center justify-center gap-1">
+              <i data-lucide="power-off" class="w-3.5 h-3.5"></i> 전체 OFF
+            </button>
+            <button onclick="toggleAutoMode()" id="btn-batch-auto" class="touch-btn flex-1 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 border border-amber-500/30 text-amber-300 hover:text-slate-950 font-bold flex items-center justify-center gap-1">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> <span id="auto-label">AI 자동</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800 space-y-2.5 flex flex-col justify-between needs-license">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-white flex items-center gap-1.5">
+              <i data-lucide="thermometer" class="w-4 h-4 text-indigo-400"></i>매장 전체 희망온도
+            </span>
+            <span class="text-[10px] text-indigo-300 font-semibold bg-indigo-500/10 px-2 py-0.5 rounded-md border border-indigo-500/20">일괄 변경</span>
+          </div>
+          <div class="flex items-center justify-between bg-slate-950/90 rounded-2xl p-2 border border-slate-800/80 shadow-inner">
+            <button onclick="batchTempDelta(-1)" class="touch-btn w-12 h-11 bg-slate-800/90 hover:bg-slate-700 text-white rounded-xl flex items-center justify-center border border-slate-700 shadow" title="전체 1°C 내리기">
+              <i data-lucide="minus" class="w-5 h-5"></i>
+            </button>
+            <div class="flex-1 text-center font-mono font-black text-white text-2xl tracking-tight flex items-center justify-center">
+              <span id="batch-temp-display">—</span><span class="text-base text-indigo-400 font-sans ml-1">°C</span>
+            </div>
+            <button onclick="batchTempDelta(1)" class="touch-btn w-12 h-11 bg-slate-800/90 hover:bg-slate-700 text-white rounded-xl flex items-center justify-center border border-slate-700 shadow" title="전체 1°C 올리기">
+              <i data-lucide="plus" class="w-5 h-5"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800 space-y-2.5 flex flex-col justify-between needs-license">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-white flex items-center gap-1.5">
+              <i data-lucide="wind" class="w-4 h-4 text-cyan-400"></i>전체 바람 세기
+            </span>
+            <span class="text-[10px] text-cyan-300 font-mono" id="batch-fan-label">—</span>
+          </div>
+          <div class="grid grid-cols-4 gap-1.5" id="batch-fan-group">
+            <button onclick="batchControl({fan:'auto'})" class="touch-btn py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-indigo-600 text-slate-300 hover:text-white font-bold text-center">자동</button>
+            <button onclick="batchControl({fan:'low'})" class="touch-btn py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-indigo-600 text-slate-300 hover:text-white font-bold text-center">1단(약)</button>
+            <button onclick="batchControl({fan:'mid'})" class="touch-btn py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-indigo-600 text-slate-300 hover:text-white font-bold text-center">2단(중)</button>
+            <button onclick="batchControl({fan:'high'})" class="touch-btn py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-indigo-600 text-slate-300 hover:text-white font-bold text-center">3단(강)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center justify-between">
+      <div>
+        <h3 class="font-bold text-white text-base flex items-center gap-2">
+          <i data-lucide="cpu" class="w-5 h-5 text-indigo-400"></i>설치된 센서 및 에어컨 장비
+        </h3>
+        <p class="text-xs text-slate-400">각 카드에서 희망온도·전원·바람 세기를 바로 조절합니다. 값은 저장되어 재접속 후에도 유지됩니다.</p>
+      </div>
+      <button onclick="openStatsModal()" class="touch-btn text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1">
+        <i data-lucide="bar-chart-2" class="w-3.5 h-3.5"></i><span>매장 통계</span>
+      </button>
+    </div>
+
+    <div id="device-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      <div class="glass-panel rounded-3xl p-5 border border-slate-800 text-center text-xs text-slate-400 col-span-full py-10">
+        장비 데이터를 기다리는 중입니다…
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ══ STATS MODAL ═════════════════════════════════════════════════════ -->
+<div id="stats-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden items-center justify-center p-4">
+  <div class="glass-panel-glow rounded-3xl max-w-3xl w-full p-6 space-y-5 border border-slate-700 shadow-2xl">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <h3 class="font-bold text-base text-white" id="stats-title">매장 온·습도 통계</h3>
+        <p class="text-xs text-slate-400" id="stats-sub">전 장비 평균 (1분 통계)</p>
+      </div>
+      <button onclick="closeModal('stats-modal')" class="touch-btn p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+    <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 p-1 rounded-xl text-xs font-semibold flex-wrap">
+      <span class="text-slate-400 px-2 text-[11px]">분석 기간:</span>
+      <button onclick="loadStats(180)"   data-mins="180"   class="stats-period px-3 py-1 rounded-lg bg-brand-600 text-white">3시간</button>
+      <button onclick="loadStats(1440)"  data-mins="1440"  class="stats-period px-3 py-1 rounded-lg text-slate-400 hover:text-white">24시간</button>
+      <button onclick="loadStats(10080)" data-mins="10080" class="stats-period px-3 py-1 rounded-lg text-slate-400 hover:text-white">7일</button>
+      <button onclick="loadStats(43200)" data-mins="43200" class="stats-period px-3 py-1 rounded-lg text-slate-400 hover:text-white">30일</button>
+    </div>
+    <div class="h-64 w-full"><canvas id="stats-chart"></canvas></div>
+  </div>
+</div>
+
+<!-- ══ SOTA MODAL (관리자: 에어컨 제조사·모델 선택) ════════════════════ -->
+<div id="sota-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden items-center justify-center p-4">
+  <form class="glass-panel-glow rounded-3xl max-w-sm w-full p-6 space-y-4 border border-slate-700 shadow-2xl" id="sota-form">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <h3 class="font-bold text-base text-white">에어컨 제조사·모델 선택</h3>
+        <p class="text-xs text-slate-400" id="sota-sub">—</p>
+      </div>
+      <button type="button" onclick="closeModal('sota-modal')" class="touch-btn p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+
+    <div class="space-y-1.5">
+      <label for="sota-brand" class="text-xs font-semibold text-slate-300 block">제조사</label>
+      <select id="sota-brand" required
+              class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-purple-500"></select>
+    </div>
+    <div class="space-y-1.5">
+      <label for="sota-model" class="text-xs font-semibold text-slate-300 block">모델</label>
+      <select id="sota-model" required
+              class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white outline-none focus:border-purple-500"></select>
+    </div>
+
+    <div id="sota-progress" class="hidden space-y-1.5">
+      <div class="flex justify-between text-xs">
+        <span id="sota-stage" class="text-slate-300">대기 중</span>
+        <span id="sota-percent" class="font-mono text-slate-300">0%</span>
+      </div>
+      <div class="h-2 rounded-full overflow-hidden bg-slate-800">
+        <div id="sota-bar" class="h-full rounded-full transition-all duration-300 bg-gradient-to-r from-purple-500 to-indigo-500" style="width:0%"></div>
+      </div>
+      <p id="sota-message" class="text-[11px] text-slate-400"></p>
+    </div>
+
+    <button type="submit" id="sota-submit"
+            class="touch-btn w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold rounded-2xl text-sm shadow-lg shadow-purple-500/25 flex items-center justify-center gap-2 disabled:opacity-50">
+      <i data-lucide="upload-cloud" class="w-4 h-4"></i><span>펌웨어 배포 시작</span>
+    </button>
+    <p class="text-[10px] text-slate-500 text-center">배포하면 장비에 해당 모델의 IR 펌웨어가 설치되어 원격 제어가 활성화됩니다. 게이트웨이가 온라인이어야 합니다.</p>
+  </form>
+</div>
+
+<!-- ══ DEVICE EDIT MODAL (장비명·위치 수정) ════════════════════════════ -->
+<div id="device-edit-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden items-center justify-center p-4">
+  <form class="glass-panel-glow rounded-3xl max-w-sm w-full p-6 space-y-4 border border-slate-700 shadow-2xl" id="device-edit-form">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <h3 class="font-bold text-base text-white">장비 정보 수정</h3>
+        <p class="text-xs text-slate-400" id="device-edit-sub">—</p>
+      </div>
+      <button type="button" onclick="closeModal('device-edit-modal')" class="touch-btn p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+
+    <div class="space-y-1.5">
+      <label for="dev-name" class="text-xs font-semibold text-slate-300 block">장비명</label>
+      <input type="text" id="dev-name" required maxlength="64" placeholder="예: 1층 홀"
+             class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+    </div>
+    <div class="space-y-1.5">
+      <label for="dev-location" class="text-xs font-semibold text-slate-300 block">위치명</label>
+      <input type="text" id="dev-location" maxlength="64" placeholder="예: 정문 옆 (비우면 표시 안 함)"
+             class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+    </div>
+
+    <button type="submit"
+            class="touch-btn w-full py-3 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-bold rounded-2xl text-sm shadow-lg shadow-brand-500/25 flex items-center justify-center gap-2">
+      <i data-lucide="check" class="w-4 h-4"></i><span>저장</span>
+    </button>
+  </form>
+</div>
+
+<!-- ══ ACCOUNT MODAL (비밀번호 변경) ═══════════════════════════════════ -->
+<div id="account-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden items-center justify-center p-4">
+  <form class="glass-panel-glow rounded-3xl max-w-sm w-full p-6 space-y-4 border border-slate-700 shadow-2xl" id="account-form">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <h3 class="font-bold text-base text-white">정보 수정</h3>
+        <p class="text-xs text-slate-400" id="account-sub">로그인 비밀번호를 변경합니다.</p>
+      </div>
+      <button type="button" onclick="closeModal('account-modal')" class="touch-btn p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+
+    <div class="space-y-1.5">
+      <label for="acc-current" class="text-xs font-semibold text-slate-300 block">현재 비밀번호</label>
+      <input type="password" id="acc-current" required placeholder="현재 비밀번호 (임시비번이면 0000)"
+             class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+    </div>
+    <div class="space-y-1.5">
+      <label for="acc-new" class="text-xs font-semibold text-slate-300 block">새 비밀번호</label>
+      <input type="password" id="acc-new" required minlength="4" maxlength="64" placeholder="4자 이상"
+             class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+    </div>
+    <div class="space-y-1.5">
+      <label for="acc-new2" class="text-xs font-semibold text-slate-300 block">새 비밀번호 확인</label>
+      <input type="password" id="acc-new2" required minlength="4" maxlength="64" placeholder="한 번 더 입력"
+             class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+    </div>
+
+    <p id="account-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2.5"></p>
+    <p id="account-ok" class="hidden text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2.5"></p>
+
+    <button type="submit" id="acc-submit"
+            class="touch-btn w-full py-3 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-bold rounded-2xl text-sm shadow-lg shadow-brand-500/25 flex items-center justify-center gap-2 disabled:opacity-50">
+      <i data-lucide="key-round" class="w-4 h-4"></i><span>비밀번호 변경</span>
+    </button>
+  </form>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-[60] hidden px-4 py-2.5 rounded-xl bg-slate-900 border border-rose-500/40 text-rose-200 text-xs font-medium shadow-2xl max-w-md text-center"></div>
 
 <script>
 "use strict";
-
-const STORE_ID = new URLSearchParams(location.search).get("store_id") || "S001";
-const MODE_LABEL = { cool:"냉방", heat:"난방", dry:"제습", fan:"송풍", auto:"자동" };
-const FAN_LABEL  = { auto:"자동", low:"약", mid:"중", high:"강" };
-
-const state = {
-  ws: null, retry: 0, reconnectTimer: null, pingTimer: null,
-  gatewayOnline: false, liveActive: false, packets: 0,
-  staleMs: 15000,
-  devices: new Map(),   // dev_id -> {dev_id, name, location, brand, model, ac, reading, ts}
-  cards: new Map(),     // dev_id -> cached element references
-  visible: [],          // dev_ids currently in the grid, in order
-  query: "", filter: "all",
-  bulkTemp: 24, bulkMixed: false, bulkTouchedUntil: 0,
-  bulkFan: "auto", bulkFanMixed: false, bulkFanTouchedUntil: 0,
-  sotaTarget: 1,
-  catalog: [],
-  suppress: new Map(),  // dev_id -> timestamp until which echoes are ignored
-};
-
 const $ = (id) => document.getElementById(id);
-
-// The dashboard repaints twice a second. Writing a property that already holds
-// the value still replaces the text node or restyles the element, which at
-// twelve cards was ~214 DOM mutations a second and read as a flicker. These
-// make every repaint a no-op unless something actually changed.
-function setText(el, value) {
-  const v = String(value);
-  if (el.textContent !== v) el.textContent = v;
-}
-function setAttr(el, name, value) {
-  const v = String(value);
-  if (el.getAttribute(name) !== v) el.setAttribute(name, v);
-}
-function setStyle(el, prop, value) {
-  if (el.style[prop] !== value) el.style[prop] = value;
-}
-function setValue(input, value) {
-  const v = String(value);
-  if (document.activeElement !== input && input.value !== v) input.value = v;
-}
-const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
-  (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+  (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
-// ── theme ────────────────────────────────────────────────────────────
-function initTheme() {
-  let saved = null;
-  try { saved = localStorage.getItem("atom-theme"); } catch (_) {}
-  const prefersDark = matchMedia("(prefers-color-scheme: dark)").matches;
-  document.documentElement.setAttribute("data-theme", saved || (prefersDark ? "dark" : "light"));
-}
-$("themeBtn").addEventListener("click", () => {
-  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  try { localStorage.setItem("atom-theme", next); } catch (_) {}
-  document.querySelector('meta[name="theme-color"]').setAttribute("content", cssVar("--surface-1"));
-  restyleCharts();
-});
+const MODE_LABEL = { cool:"냉방", heat:"난방", dry:"제습", fan:"송풍", auto:"AI자동" };
+const MODE_STYLE = {
+  cool:"bg-indigo-500/20 text-indigo-300", heat:"bg-rose-500/20 text-rose-300",
+  dry:"bg-cyan-500/20 text-cyan-300", fan:"bg-slate-500/20 text-slate-300",
+  auto:"bg-amber-500/20 text-amber-300" };
+const FAN_LABEL = { auto:"자동", low:"1단(약)", mid:"2단(중)", high:"3단(강)" };
 
-// ── tabs ─────────────────────────────────────────────────────────────
-function selectPanel(name, scroll = true) {
-  if (!document.getElementById("panel-" + name)) return;
-  document.querySelectorAll(".panel").forEach((p) =>
-    p.classList.toggle("is-active", p.id === "panel-" + name));
-  document.querySelectorAll(".navbtn").forEach((b) => {
-    if (b.dataset.panel === name) b.setAttribute("aria-current", "page");
-    else b.removeAttribute("aria-current");
-  });
-  if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
-}
-document.querySelectorAll(".navbtn").forEach((btn) =>
-  btn.addEventListener("click", () => selectPanel(btn.dataset.panel)));
-selectPanel(new URLSearchParams(location.search).get("tab") || "devices", false);
-
-// ── device model ─────────────────────────────────────────────────────
-function upsertDevice(entry) {
-  const id = entry.dev_id;
-  const dev = state.devices.get(id) || { dev_id: id, ac: {}, reading: null, ts: 0 };
-  for (const k of ["name", "location", "brand", "model", "protocol", "last_seen"]) {
-    if (entry[k] !== undefined && entry[k] !== null) dev[k] = entry[k];
-  }
-  if (entry.ac_state) dev.ac = { ...dev.ac, ...entry.ac_state };
-  if (entry.latest) { dev.reading = entry.latest; dev.ts = entry.latest.ts || 0; }
-  state.devices.set(id, dev);
-  return dev;
-}
-
-const isOnline = (dev) => dev.ts > 0 && Date.now() - dev.ts < state.staleMs;
-const isRunning = (dev) => isOnline(dev) && !!(dev.reading && dev.reading.ac_on);
-
-function deviceMatches(dev) {
-  if (state.filter === "on" && !isRunning(dev)) return false;
-  if (state.filter === "off" && (!isOnline(dev) || isRunning(dev))) return false;
-  if (state.filter === "offline" && isOnline(dev)) return false;
-  const q = state.query.trim().toLowerCase();
-  if (!q) return true;
-  return [dev.name, dev.location, dev.brand, dev.model, "디바이스 " + dev.dev_id]
-    .filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
-}
-
-// ── device grid ──────────────────────────────────────────────────────
-// The grid is rebuilt only when the visible set changes. A `live` message
-// writes through cached element references instead, because twelve devices
-// at 1Hz would otherwise rebuild the DOM twelve times a second.
-function renderGrid() {
-  const ids = [...state.devices.keys()].sort((a, b) => a - b)
-    .filter((id) => deviceMatches(state.devices.get(id)));
-
-  const unchanged = ids.length === state.visible.length &&
-    ids.every((id, i) => id === state.visible[i]);
-  // Never rebuild while someone is typing a name or location into a card.
-  const editing = document.activeElement &&
-    document.activeElement.classList.contains("inline-edit");
-  if (!unchanged && !editing) {
-    state.visible = ids;
-    const grid = $("deviceGrid");
-    grid.innerHTML = "";
-    state.cards.clear();
-    for (const id of ids) grid.appendChild(buildCard(state.devices.get(id)));
-  }
-
-  const total = state.devices.size;
-  $("gridEmpty").classList.toggle("hidden", ids.length > 0);
-  $("gridEmpty").textContent = total === 0
-    ? "디바이스를 기다리는 중입니다."
-    : "조건에 맞는 디바이스가 없습니다.";
-  for (const id of ids) paintCard(id);
-}
-
-function buildCard(dev) {
-  const el = document.createElement("article");
-  el.className = "devcard card p-3.5";
-  el.dataset.dev = dev.dev_id;
-  el.innerHTML = `
-    <header class="flex items-center gap-2">
-      <span class="dot w-2 h-2 rounded-full shrink-0" style="background:var(--muted)"></span>
-      <input class="devname inline-edit text-sm font-semibold" maxlength="32"
-             aria-label="디바이스 이름">
-      <button class="fw shrink-0 rounded-lg border hair p-1.5 needs-online"
-              title="펌웨어 배포" aria-label="펌웨어 배포">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-      </button>
-    </header>
-
-    <div class="flex items-center gap-1 mt-1 text-xs ink3 min-w-0">
-      <span class="model truncate shrink-0">모델 미등록</span>
-      <span aria-hidden="true">·</span>
-      <input class="devloc inline-edit text-xs" maxlength="32" placeholder="위치 입력"
-             aria-label="설치 위치">
-    </div>
-
-    <div class="flex items-end gap-6 mt-3">
-      <div>
-        <div class="flex items-start">
-          <span class="temp text-3xl font-semibold tnum leading-none">--</span>
-          <span class="text-xs ink3 mt-0.5">°C</span>
-        </div>
-        <p class="text-[11px] ink3 mt-1">실내온도</p>
-      </div>
-      <div>
-        <div class="flex items-start">
-          <span class="hum text-3xl font-semibold tnum leading-none">--</span>
-          <span class="text-xs ink3 mt-0.5">%</span>
-        </div>
-        <p class="text-[11px] ink3 mt-1">습도</p>
-      </div>
-      <p class="status text-[11px] ink3 ml-auto text-right"></p>
-    </div>
-
-    <div class="mt-3 pt-3 border-t hair needs-online">
-      <button class="power w-full rounded-xl py-2.5 text-sm font-semibold border hair seg">
-        전원 꺼짐
-      </button>
-      <div class="mt-2 flex items-center justify-between gap-2 rounded-xl p-2"
-           style="background:var(--surface-2)">
-        <button class="tdown w-9 h-9 rounded-full border hair grid place-items-center
-                       text-lg font-light active:scale-95 transition"
-                style="background:var(--surface-1)" aria-label="희망온도 낮춤">−</button>
-        <span class="setpoint text-lg font-semibold tnum">24 °C</span>
-        <button class="tup w-9 h-9 rounded-full border hair grid place-items-center
-                       text-lg font-light active:scale-95 transition"
-                style="background:var(--surface-1)" aria-label="희망온도 높임">+</button>
-      </div>
-      <div class="mt-2 grid grid-cols-2 gap-2">
-        <select class="mode rounded-lg border hair px-2 py-1.5 text-xs" aria-label="운전 모드">
-          ${Object.entries(MODE_LABEL).map(([v, l]) =>
-            `<option value="${v}">${l}</option>`).join("")}
-        </select>
-        <select class="fan rounded-lg border hair px-2 py-1.5 text-xs" aria-label="바람세기">
-          ${Object.entries(FAN_LABEL).map(([v, l]) =>
-            `<option value="${v}">${l}</option>`).join("")}
-        </select>
-      </div>
-    </div>`;
-
-  const q = (sel) => el.querySelector(sel);
-  const refs = { el, dot: q(".dot"), name: q(".devname"), loc: q(".devloc"),
-                 model: q(".model"), temp: q(".temp"), hum: q(".hum"),
-                 status: q(".status"), power: q(".power"), setpoint: q(".setpoint"),
-                 mode: q(".mode"), fan: q(".fan") };
-  state.cards.set(dev.dev_id, refs);
-
-  const id = dev.dev_id;
-  q(".power").addEventListener("click", () =>
-    commandAc(id, { power: (state.devices.get(id).ac.power ? 0 : 1) }));
-  q(".tdown").addEventListener("click", () =>
-    commandAc(id, { temp: Math.max(16, (state.devices.get(id).ac.temp || 24) - 1) }));
-  q(".tup").addEventListener("click", () =>
-    commandAc(id, { temp: Math.min(30, (state.devices.get(id).ac.temp || 24) + 1) }));
-  q(".mode").addEventListener("change", (e) => commandAc(id, { mode: e.target.value }));
-  q(".fan").addEventListener("change", (e) => commandAc(id, { fan: e.target.value }));
-  q(".fw").addEventListener("click", () => openSota(id));
-
-  const commitName = () => saveMeta(id, { name: refs.name.value.trim() || `디바이스 ${id}` });
-  const commitLoc = () => saveMeta(id, { location: refs.loc.value.trim() });
-  refs.name.addEventListener("blur", commitName);
-  refs.loc.addEventListener("blur", commitLoc);
-  for (const input of [refs.name, refs.loc]) {
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); input.blur(); }
-      if (e.key === "Escape") { paintCard(id); input.blur(); }
-    });
-  }
-  return el;
-}
-
-function paintCard(id) {
-  const dev = state.devices.get(id);
-  const c = state.cards.get(id);
-  if (!dev || !c) return;
-
-  const online = isOnline(dev);
-  const running = isRunning(dev);
-  if (c.el.dataset.online !== String(online)) c.el.dataset.online = String(online);
-  setStyle(c.dot, "background", !online ? "var(--muted)"
-    : running ? "var(--good)" : "var(--axis)");
-
-  setValue(c.name, dev.name || `디바이스 ${id}`);
-  setValue(c.loc, dev.location || "");
-  setText(c.model, dev.model ? `${dev.brand ? dev.brand + " " : ""}${dev.model}`
-                             : "모델 미등록");
-
-  const r = dev.reading;
-  setText(c.temp, online && r ? r.temp.toFixed(1) : "--");
-  setText(c.hum, online && r ? r.hum.toFixed(0) : "--");
-
-  if (!online) {
-    setText(c.status, dev.ts ? `${Math.round((Date.now() - dev.ts) / 1000)}초째 수신 없음`
-                             : "수신 없음");
-  } else if (r && r.fault) {
-    setText(c.status, "센서 이상");
-  } else {
-    setText(c.status, r && r.ir_ready ? "IR 준비됨" : "IR 미탑재");
-  }
-
-  const ac = dev.ac || {};
-  const on = !!ac.power;
-  setText(c.power, on ? "전원 켜짐" : "전원 꺼짐");
-  setAttr(c.power, "aria-pressed", on);
-  setStyle(c.power, "background", on ? "var(--good)" : "");
-  setStyle(c.power, "color", on ? "#ffffff" : "");
-  setStyle(c.power, "borderColor", on ? "var(--good)" : "");
-  setText(c.setpoint, `${ac.temp ?? 24} °C`);
-  setValue(c.mode, ac.mode || "cool");
-  setValue(c.fan, ac.fan || "auto");
-}
-
-// ── summary ──────────────────────────────────────────────────────────
-function renderSummary() {
-  const devs = [...state.devices.values()];
-  const live = devs.filter(isOnline).filter((d) => d.reading);
-  const temps = live.map((d) => d.reading.temp);
-  const running = live.filter((d) => d.reading.ac_on).length;
-
-  const fmt = (v) => (v === undefined ? "--" : v.toFixed(1));
-  setText($("sumAvg"), temps.length
-    ? fmt(temps.reduce((a, b) => a + b, 0) / temps.length) : "--");
-  setText($("sumMin"), temps.length ? fmt(Math.min(...temps)) : "--");
-  setText($("sumMax"), temps.length ? fmt(Math.max(...temps)) : "--");
-  setText($("sumOn"), running);
-  setText($("sumTotal"), devs.length);
-  setText($("sumMeta"), devs.length
-    ? `${live.length} / ${devs.length}대 수신` : "수신 대기 중");
-  setText($("headDevices"), `${devs.length}대`);
-
-  const anyOn = running > 0;
-  setText($("bulkPower"), anyOn ? "전체 끄기" : "전체 켜기");
-  setAttr($("bulkPower"), "aria-pressed", anyOn);
-
-  // Mirror the devices rather than showing a number nothing is set to. While
-  // the operator is working the +/- buttons their value wins.
-  if (Date.now() > state.bulkTouchedUntil) {
-    const setpoints = devs.map((d) => d.ac && d.ac.temp).filter((v) => v != null);
-    if (setpoints.length) {
-      const distinct = new Set(setpoints);
-      state.bulkMixed = distinct.size > 1;
-      state.bulkTemp = distinct.size === 1 ? setpoints[0]
-        : Math.round(setpoints.reduce((a, b) => a + b, 0) / setpoints.length);
-    }
-  }
-  setText($("bulkTemp"), state.bulkTemp);
-  setText($("bulkTempLabel"), state.bulkMixed
-    ? "전체 희망온도 (기기별 상이)" : "전체 희망온도");
-
-  if (Date.now() > state.bulkFanTouchedUntil) {
-    const fans = devs.map((d) => d.ac && d.ac.fan).filter(Boolean);
-    if (fans.length) {
-      const distinct = new Set(fans);
-      state.bulkFanMixed = distinct.size > 1;
-      state.bulkFan = distinct.size === 1 ? fans[0] : null;
-    }
-  }
-  // With mixed fan speeds no button is pressed, so the control never claims a
-  // setting the devices are not actually on.
-  document.querySelectorAll("[data-bulkfan]").forEach((b) =>
-    setAttr(b, "aria-pressed", b.dataset.bulkfan === state.bulkFan));
-  setText($("bulkFanNote"), state.bulkFanMixed ? "기기별 상이" : "");
-}
-
-// Repaint on a timer rather than per message: at twelve devices the page takes
-// twelve `live` messages a second, and the summary only needs to look live.
-// This must run unconditionally -- devices go offline by the *absence* of
-// messages, so a dirty flag fed by incoming data would freeze the cards
-// showing stale readings exactly when the stream stops.
-setInterval(() => {
-  renderGrid();      // staleness can change which devices match the filter
-  renderSummary();
-}, 500);
-
-// ── control ──────────────────────────────────────────────────────────
-const acTimers = new Map();
-
-function commandAc(devId, patch) {
-  const dev = state.devices.get(devId);
-  if (!dev) return;
-  Object.assign(dev.ac, patch);
-  state.suppress.set(devId, Date.now() + 1200);   // don't let the echo fight the user
-  paintCard(devId);
-
-  clearTimeout(acTimers.get(devId));
-  // Debounced per device: holding +/- sends one command, not one per tap.
-  acTimers.set(devId, setTimeout(() => {
-    send({ type: "ac_control", target_id: devId, power: dev.ac.power ?? 0,
-           mode: dev.ac.mode || "cool", temp: dev.ac.temp ?? 24,
-           fan: dev.ac.fan || "auto" });
-  }, 250));
-}
-
-let bulkTimer = null;
-function commandBulk(patch) {
-  if (!state.devices.size) { toast("제어할 디바이스가 없습니다.", "warning"); return; }
-  const now = Date.now();
-  for (const dev of state.devices.values()) {
-    Object.assign(dev.ac, patch);
-    state.suppress.set(dev.dev_id, now + 1500);
-  }
-  for (const id of state.visible) paintCard(id);
-
-  clearTimeout(bulkTimer);
-  bulkTimer = setTimeout(() => {
-    send({ type: "ac_control", target_id: "all", ...patch });
-  }, 250);
-}
-
-$("bulkPower").addEventListener("click", () => {
-  const anyOn = [...state.devices.values()].some(isRunning);
-  commandBulk({ power: anyOn ? 0 : 1 });
-});
-$("bulkDown").addEventListener("click", () => {
-  state.bulkTemp = Math.max(16, state.bulkTemp - 1);
-  state.bulkMixed = false;
-  state.bulkTouchedUntil = Date.now() + 3000;
-  commandBulk({ temp: state.bulkTemp });
-});
-document.querySelectorAll("[data-bulkfan]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    state.bulkFan = btn.dataset.bulkfan;
-    state.bulkFanMixed = false;
-    state.bulkFanTouchedUntil = Date.now() + 3000;
-    commandBulk({ fan: state.bulkFan });
-  });
-});
-$("bulkUp").addEventListener("click", () => {
-  state.bulkTemp = Math.min(30, state.bulkTemp + 1);
-  state.bulkMixed = false;
-  state.bulkTouchedUntil = Date.now() + 3000;
-  commandBulk({ temp: state.bulkTemp });
-});
-
-function saveMeta(devId, patch) {
-  const dev = state.devices.get(devId);
-  if (!dev) return;
-  const key = Object.keys(patch)[0];
-  if ((dev[key] || "") === (patch[key] || "")) return;   // nothing actually changed
-  Object.assign(dev, patch);
-  send({ type: "device_update", dev_id: devId, ...patch });
-  renderGrid();
-}
-
-// ── search + filters ─────────────────────────────────────────────────
-let searchTimer = null;
-$("search").addEventListener("input", (e) => {
-  clearTimeout(searchTimer);
-  const value = e.target.value;
-  searchTimer = setTimeout(() => { state.query = value; renderGrid(); }, 150);
-});
-document.querySelectorAll("[data-filter]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("[data-filter]").forEach((b) =>
-      b.setAttribute("aria-pressed", String(b === btn)));
-    state.filter = btn.dataset.filter;
-    renderGrid();
-  });
-});
-
-// ── charts (1-minute statistics only) ────────────────────────────────
-const crosshairPlugin = {
-  id: "crosshair",
-  afterDatasetsDraw(chart) {
-    const active = chart.tooltip && chart.tooltip.getActiveElements
-      ? chart.tooltip.getActiveElements() : [];
-    if (!active.length) return;
-    const x = active[0].element.x;
-    const { top, bottom } = chart.chartArea;
-    const ctx = chart.ctx;
-    ctx.save();
-    ctx.beginPath();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = cssVar("--axis");
-    ctx.moveTo(x, top);
-    ctx.lineTo(x, bottom);
-    ctx.stroke();
-    ctx.restore();
-  },
-};
-Chart.register(crosshairPlugin);
-
-const clockTick = (ms) => {
-  const d = new Date(ms);
-  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+// ── state ────────────────────────────────────────────────────────────
+const S = {
+  me: null, storeIds: [], current: null, viewMode: "SINGLE",
+  ws: null, wsGen: 0,
+  store: null,           // {name, address, plan, license, settings, gatewayOnline, staleSec, devices: Map}
+  restricted: false,
+  overview: new Map(),   // storeId -> /status snapshot
+  statsChart: null,
+  cardPanels: {},   // dev_id -> {kind, entering, mins}; each card independent
+  cardCharts: {},   // dev_id -> Chart instance for that card's stats panel
 };
 
-function baseOptions({ unit }) {
-  return {
-    responsive: true, maintainAspectRatio: false, animation: false,
-    parsing: false, normalized: true,
-    layout: { padding: { top: 6, right: 6 } },
-    interaction: { mode: "index", intersect: false },
-    plugins: {
-      legend: { display: false },   // single series -- the card title names it
-      tooltip: {
-        displayColors: true, boxWidth: 8, boxHeight: 8, usePointStyle: true,
-        padding: 10, cornerRadius: 8, borderWidth: 1,
-        callbacks: {
-          title: (items) => clockTick(items[0].parsed.x),
-          label: (item) => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${unit}`,
-        },
-      },
-    },
-    scales: {
-      x: { type: "linear", border: { display: false }, grid: { display: false },
-           ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true,
-                    callback: (v) => clockTick(v) } },
-      y: { border: { display: false }, grid: { drawTicks: false, lineWidth: 1 },
-           ticks: { maxTicksLimit: 5, padding: 8,
-                    callback: (v) => Number(v).toFixed(1) } },
-    },
-  };
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.classList.remove("hidden");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.add("hidden"), 3500);
 }
 
-function lineDataset(label, color, wash) {
-  return {
-    label, data: [], borderColor: color, backgroundColor: wash || "transparent",
-    fill: !!wash, borderWidth: 2, tension: 0.2,
-    borderJoinStyle: "round", borderCapStyle: "round",
-    pointRadius: (c) => (c.dataIndex === c.dataset.data.length - 1 ? 4 : 0),
-    pointHoverRadius: 5,
-    pointBackgroundColor: color,
-    pointBorderColor: cssVar("--surface-1"),
-    pointBorderWidth: 2,
-  };
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+  if (res.status === 401) { location.href = "/login"; throw new Error("unauthorized"); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `요청 실패 (${res.status})`);
+  return body;
 }
 
-const charts = {};
-let statsMinutes = 180;
-let stats = [];
-
-function setWindow(chart, min, max) {
-  chart.options.scales.x.min = min;
-  chart.options.scales.x.max = max;
-}
-
-function buildCharts() {
-  // The min-max band is the same hue as its average line, so the plot still
-  // reads as one series with a range -- not as three series.
-  charts.statsTemp = new Chart($("statsTempChart"), {
-    type: "line",
-    data: { datasets: [
-      { label: "최고", data: [], borderColor: "transparent", borderWidth: 0,
-        pointRadius: 0, fill: "+1", backgroundColor: cssVar("--series-temp-wash") },
-      { label: "최저", data: [], borderColor: "transparent", borderWidth: 0,
-        pointRadius: 0, fill: false },
-      lineDataset("평균", cssVar("--series-temp")),
-    ]},
-    options: baseOptions({ unit: "°C" }),
-  });
-  charts.statsHum = new Chart($("statsHumChart"), {
-    type: "line",
-    data: { datasets: [lineDataset("평균 습도", cssVar("--series-hum"))] },
-    options: baseOptions({ unit: "%" }),
-  });
-
-  const now = Date.now();
-  setWindow(charts.statsTemp, now - statsMinutes * 60000, now);
-  setWindow(charts.statsHum, now - statsMinutes * 60000, now);
-  restyleCharts();
-}
-
-function restyleCharts() {
-  const grid = cssVar("--grid"), muted = cssVar("--muted"), surface = cssVar("--surface-1");
-  const ink = cssVar("--text-primary"), ink2 = cssVar("--text-secondary");
-  const border = cssVar("--axis");
-  const hues = { statsTemp: "--series-temp", statsHum: "--series-hum" };
-
-  Object.entries(charts).forEach(([key, chart]) => {
-    if (!chart) return;
-    chart.options.scales.y.grid.color = grid;
-    chart.options.scales.y.ticks.color = muted;
-    chart.options.scales.x.ticks.color = muted;
-    const tt = chart.options.plugins.tooltip;
-    tt.backgroundColor = surface;
-    tt.titleColor = ink;
-    tt.bodyColor = ink2;
-    tt.borderColor = border;
-
-    const hue = cssVar(hues[key]);
-    chart.data.datasets.forEach((ds) => {
-      if (ds.borderColor === "transparent") {
-        ds.backgroundColor = cssVar("--series-temp-wash");
-        return;
-      }
-      ds.borderColor = hue;
-      ds.pointBackgroundColor = hue;
-      ds.pointBorderColor = surface;
-    });
-    chart.update("none");
-  });
-}
-
-function mergePoint(a, b) {
-  const na = a.sample_count || 1, nb = b.sample_count || 1, n = na + nb;
-  return {
-    ts: a.ts,
-    temp_avg: (a.temp_avg * na + b.temp_avg * nb) / n,
-    temp_min: Math.min(a.temp_min, b.temp_min),
-    temp_max: Math.max(a.temp_max, b.temp_max),
-    hum_avg: (a.hum_avg * na + b.hum_avg * nb) / n,
-    sample_count: n,
-  };
-}
-function replaceStats(points) { stats = points.slice(); renderStats(); }
-function appendStats(points) {
-  const byTs = new Map(stats.map((p) => [p.ts, p]));
-  points.forEach((p) => {
-    const prior = byTs.get(p.ts);
-    byTs.set(p.ts, prior ? mergePoint(prior, p) : p);   // several devices per minute
-  });
-  stats = [...byTs.values()].sort((a, b) => a.ts - b.ts);
-  renderStats();
-}
-
-function renderStats() {
-  const now = Date.now();
-  const pts = stats.filter((p) => p.ts >= now / 1000 - statsMinutes * 60);
-  $("statsEmpty").classList.toggle("hidden", pts.length > 0);
-
-  const from = now - statsMinutes * 60000;
-  const ds = charts.statsTemp.data.datasets;
-  ds[0].data = pts.map((p) => ({ x: p.ts * 1000, y: p.temp_max }));
-  ds[1].data = pts.map((p) => ({ x: p.ts * 1000, y: p.temp_min }));
-  ds[2].data = pts.map((p) => ({ x: p.ts * 1000, y: p.temp_avg }));
-  setWindow(charts.statsTemp, from, now);
-  charts.statsTemp.update("none");
-
-  charts.statsHum.data.datasets[0].data = pts.map((p) => ({ x: p.ts * 1000, y: p.hum_avg }));
-  setWindow(charts.statsHum, from, now);
-  charts.statsHum.update("none");
-
-  $("tableBody").innerHTML = pts.slice(-60).reverse().map((p) => `
-    <tr class="border-t" style="border-color:var(--border)">
-      <td class="py-1.5 pr-3">${clockTick(p.ts * 1000)}</td>
-      <td class="py-1.5 pr-3">${p.temp_avg.toFixed(2)}</td>
-      <td class="py-1.5 pr-3">${p.temp_min.toFixed(2)}</td>
-      <td class="py-1.5 pr-3">${p.temp_max.toFixed(2)}</td>
-      <td class="py-1.5 pr-3">${p.hum_avg.toFixed(2)}</td>
-      <td class="py-1.5">${p.sample_count || 0}</td>
-    </tr>`).join("") ||
-    `<tr><td colspan="6" class="py-4 text-center ink3">데이터 없음</td></tr>`;
-}
-
-document.querySelectorAll("[data-range]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("[data-range]").forEach((b) =>
-      b.setAttribute("aria-pressed", String(b === btn)));
-    statsMinutes = Number(btn.dataset.range);
-    send({ type: "request_stats", minutes: statsMinutes });
-    renderStats();
-  });
-});
-$("tableBtn").addEventListener("click", () => {
-  const shown = !$("tableWrap").classList.toggle("hidden");
-  $("tableBtn").setAttribute("aria-pressed", String(shown));
-});
-
-// ── SOTA ─────────────────────────────────────────────────────────────
-async function loadCatalog() {
-  try {
-    const res = await fetch("/api/v1/ac/models");
-    state.catalog = (await res.json()).catalog || [];
-  } catch (_) { state.catalog = []; }
-  $("brandSel").innerHTML = state.catalog
-    .map((b, i) => `<option value="${i}">${esc(b.brand)}</option>`).join("");
-  fillModels();
-}
-function fillModels() {
-  const brand = state.catalog[Number($("brandSel").value) || 0];
-  $("modelSel").innerHTML = (brand ? brand.models : [])
-    .map((m, i) => `<option value="${i}">${esc(m.name)} · ${esc(m.protocol)}</option>`).join("");
-}
-$("brandSel").addEventListener("change", fillModels);
-
-function openSota(devId) {
-  if (devId != null) {
-    state.sotaTarget = devId;
-    const dev = state.devices.get(devId);
-    $("sotaTargetName").textContent = (dev && dev.name) || `디바이스 ${devId}`;
-    $("sotaProgressWrap").classList.add("hidden");
-  }
-  $("sotaModal").classList.remove("hidden");
-  $("sotaModal").classList.add("flex");
-}
-function closeSota() {
-  $("sotaModal").classList.add("hidden");
-  $("sotaModal").classList.remove("flex");
-}
-$("sotaClose").addEventListener("click", closeSota);
-$("sotaBackdrop").addEventListener("click", closeSota);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSota(); });
-
-$("sotaDeploy").addEventListener("click", () => {
-  const brand = state.catalog[Number($("brandSel").value) || 0];
-  const model = brand && brand.models[Number($("modelSel").value) || 0];
-  if (!model) { toast("모델 목록을 불러오지 못했습니다.", "critical"); return; }
-  setSotaProgress("requested", 0, "배포 요청을 보냈습니다…");
-  send({ type: "sota_deploy", target_id: state.sotaTarget,
-         brand: brand.brand, model: model.name, model_id: model.id,
-         protocol: model.protocol });
-});
-
-const SOTA_STAGE = { requested:"요청 전송", prepare:"펌웨어 준비", serve:"OTA 서버 배포",
-                     notify:"디바이스 통지", flashing:"플래싱", verify:"검증",
-                     done:"완료", failed:"실패" };
-function setSotaProgress(stage, percent, message, ok = true) {
-  $("sotaProgressWrap").classList.remove("hidden");
-  $("sotaStage").textContent = SOTA_STAGE[stage] || stage || "진행 중";
-  $("sotaPct").textContent = (percent ?? 0) + "%";
-  $("sotaBar").style.width = (percent ?? 0) + "%";
-  $("sotaBar").style.background = ok ? "var(--series-hum)" : "var(--critical)";
-  $("sotaMsg").textContent = message || "";
-}
-
-// ── toasts ───────────────────────────────────────────────────────────
-function toast(message, level = "good") {
-  const el = document.createElement("div");
-  el.className = "card px-3.5 py-2.5 text-sm flex items-start gap-2 pointer-events-auto";
-  el.innerHTML =
-    `<span class="w-2 h-2 rounded-full mt-1.5 shrink-0" style="background:var(--${level})"></span>
-     <span class="ink2">${esc(message)}</span>`;
-  $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), 4200);
-}
-
-function logPacket(hex, ac) {
-  const list = $("packetLog");
-  if (list.firstElementChild && list.firstElementChild.classList.contains("ink3")) {
-    list.innerHTML = "";
-  }
-  const li = document.createElement("li");
-  li.className = "flex justify-between gap-2";
-  li.innerHTML = `<span class="ink">${esc(hex.replace(/(..)/g, "$1 ").trim())}</span>
-                  <span class="ink3 shrink-0">#${ac.target_id} ${MODE_LABEL[ac.mode] || ac.mode}` +
-                  ` ${ac.temp}°</span>`;
-  list.prepend(li);
-  while (list.children.length > 8) list.lastElementChild.remove();
-}
-
-// ── connection ───────────────────────────────────────────────────────
-function setConn(kind) {
-  const map = {
-    live:   ["var(--good)",     "실시간 연결"],
-    online: ["var(--good)",     "연결됨"],
-    nogw:   ["var(--warning)",  "게이트웨이 오프라인"],
-    retry:  ["var(--serious)",  "재연결 중"],
-    down:   ["var(--critical)", "연결 끊김"],
-  };
-  const [color, label] = map[kind] || map.down;
-  $("connIcon").firstElementChild.setAttribute("fill", color);
-  $("connText").textContent = label;
-}
-function refreshConn() {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-  setConn(state.gatewayOnline ? (state.liveActive ? "live" : "online") : "nogw");
-  $("livePill").classList.toggle("hidden", !state.liveActive);
-  $("livePill").classList.toggle("inline-flex", state.liveActive);
-  $("gwState").textContent = state.gatewayOnline ? "온라인" : "오프라인";
-  $("gwLive").textContent = state.liveActive ? "스트리밍 중 (1초)" : "중지";
-}
-
-function send(payload) {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify(payload));
-    return true;
-  }
-  toast("서버에 연결되어 있지 않습니다.", "critical");
-  return false;
-}
-
-function connect() {
-  clearTimeout(state.reconnectTimer);
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(
-    `${proto}//${location.host}/ws/live?store_id=${encodeURIComponent(STORE_ID)}`);
-  state.ws = ws;
-
-  ws.onopen = () => {
-    state.retry = 0;
-    setConn("online");
-    clearInterval(state.pingTimer);
-    state.pingTimer = setInterval(() => send({ type: "ping" }), 25000);
-  };
-  ws.onclose = () => {
-    clearInterval(state.pingTimer);
-    state.gatewayOnline = false;
-    state.liveActive = false;
-    $("livePill").classList.add("hidden");
-    const delay = Math.min(30000, 1000 * Math.pow(2, state.retry++));   // capped backoff
-    setConn(state.retry > 1 ? "retry" : "down");
-    state.reconnectTimer = setTimeout(connect, delay);
-  };
-  ws.onerror = () => ws.close();
-  ws.onmessage = (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch (_) { return; }
-    handle(msg);
-  };
-}
-
-function handle(msg) {
-  switch (msg.type) {
-    case "hello":
-      $("storeName").textContent = msg.store_name || msg.store_id;
-      $("storeId").textContent = msg.store_id;
-      state.gatewayOnline = !!msg.gateway_online;
-      state.liveActive = !!msg.live_active;
-      if (msg.stale_seconds) state.staleMs = msg.stale_seconds * 1000;
-      (msg.devices || []).forEach(upsertDevice);
-      if (msg.stats) replaceStats(msg.stats);
-      renderLicense(msg.license);
-      renderGatewayInfo(msg.gateway_info);
-      renderGrid();
-      renderSummary();
-      refreshConn();
-      break;
-
-    case "live": {
-      const d = msg.data;
-      const dev = state.devices.get(d.dev_id);
-      const isNew = !dev;
-      upsertDevice({ dev_id: d.dev_id, latest: d });
-      state.liveActive = true;
-      state.packets += 1;
-      $("gwPackets").textContent = state.packets.toLocaleString("ko-KR");
-      if (isNew) { renderGrid(); refreshConn(); }
-      break;
-    }
-
-    case "device_meta":
-      upsertDevice(msg.device);
-      renderGrid();
-      break;
-
-    case "ac_state":
-      for (const u of msg.updates || []) {
-        const dev = state.devices.get(u.dev_id);
-        if (!dev) continue;
-        const until = state.suppress.get(u.dev_id) || 0;
-        if (Date.now() > until) Object.assign(dev.ac, u.state);
-        paintCard(u.dev_id);
-      }
-      if (msg.updates && msg.updates.length) {
-        const last = msg.updates[msg.updates.length - 1];
-        logPacket(last.packet_hex, last.state);
-      }
-          break;
-
-    case "ac_ack":
-      if (!msg.ok) toast(msg.message || "에어컨 명령이 거부되었습니다.", "critical");
-      break;
-
-    case "stats":
-      if (msg.mode === "replace") replaceStats(msg.points || []);
-      else appendStats(msg.points || []);
-      break;
-
-    case "gateway_status":
-      state.gatewayOnline = !!msg.online;
-      if (!msg.online) state.liveActive = false;
-      renderGatewayInfo(msg.info);
-      refreshConn();
-      toast(msg.online ? "게이트웨이가 연결되었습니다." : "게이트웨이 연결이 끊겼습니다.",
-            msg.online ? "good" : "warning");
-      break;
-
-    case "sota_progress":
-      setSotaProgress(msg.stage, msg.percent, msg.message, msg.ok !== false);
-      if (msg.stage === "done") {
-        toast("펌웨어 배포 완료. IR 제어를 사용할 수 있습니다.", "good");
-        setTimeout(closeSota, 1800);
-      } else if (msg.ok === false) {
-        toast(msg.message || "배포에 실패했습니다.", "critical");
-      }
-      break;
-
-    case "error":
-      toast(msg.message || "오류가 발생했습니다.", "critical");
-      break;
-  }
-}
-
-function renderLicense(lic) {
-  if (!lic) return;
-  const tone = lic.status === "active" ? "good"
-             : lic.status === "grace" ? "warning" : "critical";
-  const label = { active:"정상", grace:"유예기간", expired:"만료",
-                  suspended:"정지", unregistered:"미등록" }[lic.status] || lic.status;
-  $("licStatus").textContent = label;
-  $("licDetail").textContent = lic.message || "";
-  $("licIcon").setAttribute("stroke", `var(--${tone})`);
-  $("licGrace").textContent = (lic.grace_period_days ?? "—") + "일" +
-    (lic.status === "grace" ? ` (${lic.days_remaining}일 남음)` : "");
-  $("licExpiry").textContent = lic.license_expires_at
-    ? lic.license_expires_at.slice(0, 10) : "—";
-}
-
-function renderGatewayInfo(info) {
-  if (!info) return;
-  if (info.mqtt !== undefined) {
-    $("gwMqtt").textContent = info.mqtt ? "연결됨"
-      : (info.simulated ? "미사용 (시뮬레이션)" : "끊김");
-  }
+async function logout() {
+  try { await fetch("/api/v1/auth/logout", { method: "POST" }); } catch (_) {}
+  location.href = "/login";
 }
 
 // ── boot ─────────────────────────────────────────────────────────────
-initTheme();
-buildCharts();
-renderSummary();
-loadCatalog();
-connect();
+async function boot() {
+  lucide.createIcons();
+  try { S.me = await api("/api/v1/auth/me"); } catch (_) { return; }
+
+  const injected = (window.__ATOM__ && !window.__ATOM__.store_id.includes("%%"))
+    ? window.__ATOM__.store_id : null;
+
+  if (S.me.role === "owner") {
+    S.storeIds = S.me.store_ids || [];
+    S.current = (injected && S.storeIds.includes(injected)) ? injected : S.storeIds[0];
+    if (S.storeIds.length > 1) {
+      $("viewmode-wrap").classList.remove("hidden");
+      $("viewmode-wrap").classList.add("flex");
+      $("store-select-wrapper").classList.remove("hidden");
+    }
+  } else if (S.me.role === "store") {
+    S.storeIds = [S.me.store_id];
+    S.current = S.me.store_id;
+  } else { // admin inspecting a store
+    S.storeIds = [injected || "S001"];
+    S.current = S.storeIds[0];
+    $("admin-link").classList.remove("hidden");
+    $("admin-link").classList.add("flex");
+  }
+
+  if (S.me.role === "store" || S.me.role === "owner") {
+    $("account-btn").classList.remove("hidden");
+    $("account-btn").classList.add("flex");
+  }
+
+  if (!S.current) {
+    $("portal-title").textContent = "배정된 매장이 없습니다";
+    $("portal-sub").textContent = "본사 관리자에게 매장 배정을 요청하세요.";
+    return;
+  }
+  renderHeader();
+  connect(S.current);
+}
+
+function renderHeader() {
+  if (S.me.role === "owner") {
+    $("portal-title").textContent = `${S.me.name || S.me.owner_id}님의 매장 관제 포털`;
+    $("portal-sub").textContent = `보유 매장 ${S.storeIds.length}개 · 온·습도 실시간 모니터링 및 일괄 제어`;
+    const sel = $("header-store-select");
+    sel.innerHTML = S.storeIds.map((id) => {
+      const name = S.overview.get(id)?.store_name || (S.current === id && S.store?.name) || id;
+      return `<option value="${esc(id)}" ${id === S.current ? "selected" : ""}>${esc(name)}</option>`;
+    }).join("");
+  } else if (S.me.role === "store") {
+    $("portal-title").textContent = S.store?.name || S.current;
+    $("portal-sub").textContent = `${S.current} · 매장 환경 관제`;
+  } else {
+    $("portal-title").textContent = `${S.store?.name || S.current} (관리자 열람)`;
+    $("portal-sub").textContent = `${S.current} · 본사 관리자 세션으로 열람 중`;
+  }
+}
+
+// ── websocket ────────────────────────────────────────────────────────
+function connect(storeId) {
+  S.wsGen += 1;
+  const gen = S.wsGen;
+  if (S.ws) { try { S.ws.close(); } catch (_) {} }
+  S.store = { name: storeId, devices: new Map(), staleSec: 15, gatewayOnline: false,
+              license: null, settings: { auto_temp_control: false } };
+  setConn("connecting");
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/ws/live?store_id=${encodeURIComponent(storeId)}`);
+  S.ws = ws;
+
+  ws.onmessage = (ev) => { if (gen === S.wsGen) onMessage(JSON.parse(ev.data)); };
+  ws.onclose = () => {
+    if (gen !== S.wsGen) return;
+    setConn("offline");
+    setTimeout(() => { if (gen === S.wsGen) connect(storeId); }, 2500);
+  };
+}
+
+function setConn(state) {
+  const dot = $("conn-dot"), text = $("conn-text");
+  if (state === "online") { dot.className = "w-2 h-2 rounded-full bg-emerald-400 pulse-online"; text.textContent = "실시간 연결"; }
+  else if (state === "connecting") { dot.className = "w-2 h-2 rounded-full bg-amber-400"; text.textContent = "연결 중"; }
+  else { dot.className = "w-2 h-2 rounded-full bg-rose-400"; text.textContent = "재연결 중"; }
+}
+
+function onMessage(msg) {
+  const st = S.store;
+  switch (msg.type) {
+    case "hello": {
+      setConn("online");
+      st.name = msg.store_name; st.address = msg.address; st.plan = msg.plan;
+      st.license = msg.license; st.settings = msg.settings || st.settings;
+      st.gatewayOnline = msg.gateway_online; st.staleSec = msg.stale_seconds || 15;
+      st.devices = new Map();
+      (msg.devices || []).forEach((d) => st.devices.set(d.dev_id, d));
+      $("live-pill").classList.toggle("hidden", !msg.live_active);
+      $("live-pill").classList.toggle("inline-flex", !!msg.live_active);
+      renderHeader(); renderLicense(); renderAll();
+      ensureRawCatalog();
+      break;
+    }
+    case "live": {
+      const d = st.devices.get(msg.data.dev_id);
+      if (!d) { st.devices.set(msg.data.dev_id, { dev_id: msg.data.dev_id, latest: msg.data }); renderAll(); break; }
+      d.latest = msg.data;
+      patchLive(d); renderSummary();
+      break;
+    }
+    case "ac_state":
+      (msg.updates || []).forEach((u) => {
+        const d = st.devices.get(u.dev_id) || { dev_id: u.dev_id };
+        d.ac_state = u.state; st.devices.set(u.dev_id, d);
+      });
+      renderAll();
+      break;
+    case "ac_ack":
+      if (msg.ok === false) toast(msg.message || "IR 명령 전송에 실패했습니다.");
+      break;
+    case "device_meta": {
+      const d = st.devices.get(msg.device.dev_id) || { dev_id: msg.device.dev_id };
+      Object.assign(d, msg.device); st.devices.set(d.dev_id, d);
+      if (d.protocol === "RAW") { S.rawSlots = null; sotaCatalog = null; }
+      renderAll();
+      ensureRawCatalog();
+      break;
+    }
+    case "sota_progress":
+      onSotaProgress(msg);
+      break;
+    case "device_order":
+      (msg.order || []).forEach((id, idx) => {
+        const d = st.devices.get(id);
+        if (d) d.sort_order = idx;
+      });
+      renderGrid();
+      break;
+    case "gateway_status":
+      st.gatewayOnline = msg.online;
+      if (!msg.online) $("live-pill").classList.add("hidden");
+      renderSummary();
+      break;
+    case "stats":
+      break; // chart pulls via REST when the modal is open
+    case "error":
+      if (msg.scope === "auth") { location.href = "/login"; return; }
+      toast(msg.message || "오류가 발생했습니다.");
+      break;
+  }
+}
+
+// ── rendering ────────────────────────────────────────────────────────
+function renderLicense() {
+  const lic = S.store.license || {};
+  const banner = $("license-banner"), text = $("license-banner-text");
+  S.restricted = !lic.authorized;
+  $("section-single-store").classList.toggle("restricted", S.restricted);
+
+  const badge = $("single-sub-badge");
+  if (lic.status === "active") {
+    banner.classList.add("hidden");
+    badge.className = "text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
+    badge.textContent = `구독 정상 (D-${lic.days_remaining ?? "—"})`;
+  } else if (lic.status === "grace") {
+    banner.className = "border-b px-4 py-2.5 text-center text-xs sm:text-sm backdrop-blur bg-amber-900/70 border-amber-500/40 text-amber-100";
+    text.textContent = `구독이 만료되었습니다. 유예기간 ${lic.days_remaining}일 남음 — 본사에 갱신을 문의하세요.`;
+    banner.classList.remove("hidden");
+    badge.className = "text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30";
+    badge.textContent = `유예 D-${lic.days_remaining}`;
+  } else {
+    banner.className = "border-b px-4 py-2.5 text-center text-xs sm:text-sm backdrop-blur bg-rose-900/70 border-rose-500/40 text-rose-100";
+    text.textContent = lic.message || "구독이 만료되어 원격 제어가 제한되었습니다. 본사에 문의하세요.";
+    banner.classList.remove("hidden");
+    badge.className = "text-xs font-bold px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30";
+    badge.textContent = lic.status === "suspended" ? "구독 정지" : "구독 만료 (제약)";
+  }
+  lucide.createIcons();
+}
+
+function deviceOnline(d) {
+  return d.latest && (Date.now() - d.latest.ts) < S.store.staleSec * 1000;
+}
+
+function renderSummary() {
+  const st = S.store;
+  const devs = [...st.devices.values()];
+  const live = devs.filter(deviceOnline).map((d) => d.latest).filter((l) => l && !l.fault);
+  $("single-store-name").textContent = st.name || S.current;
+  $("single-store-desc").textContent =
+    [st.address, st.plan, `GW: ${st.gatewayOnline ? "온라인" : "오프라인"}`].filter(Boolean).join(" | ");
+  $("stat-sensors").textContent = `${devs.length}대`;
+  $("stat-avg-temp").textContent = live.length
+    ? (live.reduce((a, l) => a + l.temp, 0) / live.length).toFixed(1) + "°C" : "—";
+  $("stat-avg-hum").textContent = live.length
+    ? Math.round(live.reduce((a, l) => a + l.hum, 0) / live.length) + "%" : "—";
+  const on = devs.filter((d) => d.ac_state?.power).length;
+  $("stat-ac-running").textContent = `${on} / ${devs.length}대`;
+
+  const targets = devs.map((d) => d.ac_state?.temp).filter((t) => t != null);
+  $("batch-temp-display").textContent = targets.length
+    ? Math.round(targets.reduce((a, b) => a + b, 0) / targets.length) : "—";
+  const fans = new Set(devs.map((d) => d.ac_state?.fan).filter(Boolean));
+  $("batch-fan-label").textContent = fans.size === 1 ? (FAN_LABEL[[...fans][0]] || "—")
+    : (fans.size ? "혼합" : "—");
+  $("auto-label").textContent = st.settings?.auto_temp_control ? "AI 자동 ON" : "AI 자동";
+  $("btn-batch-auto").classList.toggle("bg-amber-500", !!st.settings?.auto_temp_control);
+  $("btn-batch-auto").classList.toggle("text-slate-950", !!st.settings?.auto_temp_control);
+}
+
+function renderAll() { renderSummary(); renderGrid(); }
+
+function sortedDevs() {
+  // sort_order wins when set; devices never reordered keep their dev_id spot.
+  return [...S.store.devices.values()].sort((a, b) =>
+    ((a.sort_order ?? a.dev_id) - (b.sort_order ?? b.dev_id)) || (a.dev_id - b.dev_id));
+}
+
+// The 1-second live readings are patched in place by patchLive(), so they must
+// not count as "this card changed" -- strip them before comparing renders.
+const CARD_VOLATILE = /(data-live="(?:temp|hum)">)[^<]*/g;
+
+function renderGrid() {
+  if (dragCard) return;   // never repaint mid-drag; the drop handler repaints
+  const grid = $("device-grid");
+  const devs = sortedDevs();
+  if (!devs.length) {
+    grid.innerHTML = `<div class="glass-panel rounded-3xl p-5 border border-slate-800 text-center text-xs text-slate-400 col-span-full py-10">
+      아직 등록된 장비가 없습니다. Atom Lite가 첫 센서 패킷을 보내면 자동으로 나타납니다.</div>`;
+    S.cardSigs = {};
+    return;
+  }
+
+  // Keyed incremental render: only a card whose content actually changed is
+  // replaced. Untouched cards keep their DOM nodes, so pressing a button on
+  // one card never makes the others flicker.
+  if (!S.cardSigs) S.cardSigs = {};
+  const wanted = new Set(devs.map((d) => String(d.dev_id)));
+  [...grid.children].forEach((el) => {
+    const id = el.dataset?.dev;
+    if (!id || !wanted.has(id)) {          // placeholder or removed device
+      el.remove();
+      if (id) delete S.cardSigs[id];
+    }
+  });
+  const existing = {};
+  grid.querySelectorAll(":scope > [data-dev]").forEach((el) => {
+    existing[el.dataset.dev] = el;
+  });
+
+  const replaced = new Set();
+  let cursor = null;                       // the previous card in final order
+  for (const d of devs) {
+    const id = String(d.dev_id);
+    const html = cardHtml(d);
+    const sig = html.replace(CARD_VOLATILE, "$1");
+    let el = existing[id];
+    if (!el || S.cardSigs[id] !== sig) {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = html.trim();
+      const fresh = tpl.content.firstElementChild;
+      if (el) el.replaceWith(fresh);
+      else grid.appendChild(fresh);
+      el = fresh;
+      S.cardSigs[id] = sig;
+      replaced.add(d.dev_id);
+    }
+    // Keep document order in step with display order (moves reuse the node).
+    const anchor = cursor ? cursor.nextElementSibling : grid.firstElementChild;
+    if (anchor !== el) grid.insertBefore(el, anchor);
+    cursor = el;
+  }
+
+  lucide.createIcons();
+  // Only a replaced card lost its canvas; refill just those stats panels.
+  for (const [devId, p] of Object.entries(S.cardPanels))
+    if (!p.entering && p.kind === "stats" && replaced.has(Number(devId)))
+      loadCardStats(Number(devId));
+}
+
+function cardHtml(d) {
+  const ac = d.ac_state || { power: 0, mode: "cool", temp: 24, fan: "auto" };
+  const online = deviceOnline(d);
+  const fault = d.latest?.fault;
+  const mode = ac.mode || "cool";
+  const irReady = d.latest ? d.latest.ir_ready : !!d.model;
+  const panel = S.cardPanels[d.dev_id] || null;
+  const toggleBtn = (kind, on) => on
+    ? "bg-brand-600 text-white shadow"
+    : kind === "remote" ? "bg-brand-600/40 hover:bg-brand-500 text-white"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300";
+  return `
+  <div class="glass-panel rounded-3xl p-5 border border-slate-800 space-y-3.5 flex flex-col justify-between shadow-lg ${online ? "" : "dev-offline"}" data-dev="${d.dev_id}">
+    <div class="space-y-3.5">
+      <div>
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-white text-base flex items-center gap-1.5 min-w-0">
+            <span class="truncate">${esc(d.name || "디바이스 " + d.dev_id)}</span>
+            <button onclick="openDeviceEditModal(${d.dev_id})" title="장비명·위치 수정"
+                    class="touch-btn shrink-0 p-1 rounded-md bg-slate-800/70 hover:bg-brand-600 text-slate-400 hover:text-white">
+              <i data-lucide="pencil" class="w-3 h-3"></i>
+            </button>
+          </span>
+          <div class="flex items-center gap-1.5">
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-lg ${MODE_STYLE[mode] || MODE_STYLE.cool}">${MODE_LABEL[mode] || mode}</span>
+            ${d.brand ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300">${esc(d.brand)}</span>` : ""}
+            <span class="drag-handle shrink-0 p-1.5 ml-0.5 rounded-md bg-slate-800/70 text-slate-500 hover:text-slate-300"
+                  data-drag="${d.dev_id}" title="잡아서 순서 이동">
+              <i data-lucide="grip-vertical" class="w-3.5 h-3.5 pointer-events-none"></i>
+            </span>
+          </div>
+        </div>
+        <span class="text-xs text-slate-400 block mt-0.5 truncate">
+          ${esc(d.model || (irReady ? "" : "기본 펌웨어 (IR 미탑재)"))}${d.location ? " · " + esc(d.location) : ""}
+          ${online ? "" : ' · <span class="text-rose-400 font-semibold">오프라인</span>'}
+          ${fault ? ' · <span class="text-amber-400 font-semibold">센서 점검</span>' : ""}
+        </span>
+      </div>
+
+      <div class="relative overflow-hidden space-y-3.5${panel && !panel.entering ? " panel-open" : ""}" data-zone="${d.dev_id}">
+      <div class="grid grid-cols-2 gap-2 bg-slate-900/90 rounded-2xl p-2.5 text-center border border-slate-800">
+        <div><span class="text-[10px] text-slate-400 block">현재 실내온도</span>
+          <span class="text-2xl font-black text-indigo-400 font-mono" data-live="temp">${(!fault && d.latest) ? d.latest.temp.toFixed(1) + "°C" : "—"}</span></div>
+        <div><span class="text-[10px] text-slate-400 block">현재 실내습도</span>
+          <span class="text-2xl font-black text-cyan-400 font-mono" data-live="hum">${(!fault && d.latest) ? Math.round(d.latest.hum) + "%" : "—"}</span></div>
+      </div>
+
+      <div class="bg-slate-950/70 p-2.5 rounded-2xl border border-slate-800 space-y-2 needs-license needs-online">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-slate-400 font-medium">희망온도 설정:</span>
+          <button onclick="devControl(${d.dev_id}, {power: ${ac.power ? 0 : 1}})"
+                  class="touch-btn px-2 py-0.5 rounded-md text-[11px] font-bold ${ac.power ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-rose-500/20 text-rose-400"}">
+            ${ac.power ? "● 가동중 (ON)" : "○ 정지 (OFF)"}
+          </button>
+        </div>
+        <div class="flex items-center justify-between bg-slate-900/90 rounded-xl p-1.5 border border-slate-800">
+          <button onclick="devControl(${d.dev_id}, {temp: ${Math.max(16, (ac.temp || 24) - 1)}})" class="touch-btn w-9 h-9 bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center justify-center border border-slate-700" title="1°C 내리기">
+            <i data-lucide="minus" class="w-4 h-4"></i>
+          </button>
+          <div class="font-mono font-black text-white text-xl px-2">${ac.temp ?? 24}<span class="text-xs text-indigo-400 font-sans ml-0.5">°C</span></div>
+          <button onclick="devControl(${d.dev_id}, {temp: ${Math.min(30, (ac.temp || 24) + 1)}})" class="touch-btn w-9 h-9 bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center justify-center border border-slate-700" title="1°C 올리기">
+            <i data-lucide="plus" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="space-y-1.5 needs-license needs-online">
+        <div class="flex items-center justify-between text-[11px]">
+          <span class="text-slate-400">바람 세기 (팬):</span>
+          <span class="text-cyan-300 font-bold font-mono">${FAN_LABEL[ac.fan] || ac.fan || "—"}</span>
+        </div>
+        <div class="grid grid-cols-4 gap-1 text-[10px] font-bold">
+          ${["auto","low","mid","high"].map((f) => `
+            <button onclick="devControl(${d.dev_id}, {fan:'${f}'})"
+                    class="touch-btn py-1 rounded-lg ${ac.fan === f ? "bg-cyan-500 text-slate-950 shadow" : "bg-slate-900 text-slate-400 hover:text-white"}">
+              ${FAN_LABEL[f].replace(/\(.+\)/, "")}
+            </button>`).join("")}
+        </div>
+      </div>
+      ${panel ? cardPanelHtml(d, panel) : ""}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-3 gap-1.5 pt-2 border-t border-slate-800 text-xs font-bold">
+      <button onclick="devControl(${d.dev_id}, ${mode === "auto" ? "{mode:'cool'}" : "{mode:'auto', power:1}"})"
+              class="touch-btn py-2 ${mode === "auto" ? "bg-amber-500 text-slate-950" : "bg-slate-800 text-amber-300 hover:bg-slate-700"} rounded-xl flex items-center justify-center gap-1 needs-license needs-online">
+        <i data-lucide="sparkles" class="w-3.5 h-3.5"></i><span>${mode === "auto" ? "AI자동 ON" : "AI자동"}</span>
+      </button>
+      <button onclick="toggleCardPanel(${d.dev_id}, 'stats')"
+              class="touch-btn py-2 rounded-xl flex items-center justify-center gap-1 ${toggleBtn("stats", panel?.kind === "stats")}">
+        <i data-lucide="bar-chart-2" class="w-3.5 h-3.5"></i><span>통계</span>
+      </button>
+      <button onclick="toggleCardPanel(${d.dev_id}, 'remote')"
+              class="touch-btn py-2 rounded-xl flex items-center justify-center gap-1 needs-license needs-online ${toggleBtn("remote", panel?.kind === "remote")}">
+        <i data-lucide="sliders" class="w-3.5 h-3.5"></i><span>리모컨</span>
+      </button>
+    </div>
+    ${S.me?.role === "admin" ? `
+    <button onclick="openSotaModal(${d.dev_id})"
+            class="touch-btn w-full py-2 bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold">
+      <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i>
+      <span>${d.model ? "에어컨 모델 변경 (재배포)" : "에어컨 제조사·모델 선택"}</span>
+    </button>` : ""}
+  </div>`;
+}
+
+// The sliding panel body: what used to live in the 리모컨/통계 popups,
+// rendered over the card body while the toggle is on.
+function cardPanelHtml(d, panel) {
+  const openCls = panel.entering ? "" : " open";
+  if (panel.kind === "stats") {
+    const mins = panel.mins || 180;
+    const chip = (m, label) => `
+      <button onclick="setCardStatsRange(${d.dev_id}, ${m})" data-mins="${m}"
+              class="px-2 py-0.5 rounded-lg text-[10px] font-bold ${mins === m ? "bg-brand-600 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}">${label}</button>`;
+    return `
+    <div class="card-panel${openCls} flex flex-col gap-2" data-panel="${d.dev_id}">
+      <div class="flex items-center justify-between shrink-0">
+        <span class="text-xs font-bold text-white flex items-center gap-1.5">
+          <i data-lucide="bar-chart-2" class="w-3.5 h-3.5 text-indigo-300"></i>온·습도 통계</span>
+        <div class="flex gap-1">${chip(180, "3시간")}${chip(1440, "1일")}${chip(10080, "7일")}</div>
+      </div>
+      <div class="flex-1 min-h-[140px] relative">
+        <canvas id="card-stats-${d.dev_id}"></canvas>
+      </div>
+      <p id="card-stats-sub-${d.dev_id}" class="text-[10px] text-slate-500 shrink-0"></p>
+    </div>`;
+  }
+  const ac = d.ac_state || { power: 0, mode: "cool", temp: 24, fan: "auto" };
+  const raw = isRawDevice(d);
+  const na = raw ? "disabled" : "";
+  const modeBtn = (m, label, cls, dis) => `
+    <button onclick="remoteCmdFor(${d.dev_id}, {mode:'${m}',power:1})" ${dis}
+            class="touch-btn py-1.5 rounded-lg text-[11px] font-bold ${ac.mode === m ? "bg-brand-600 text-white" : cls} disabled:opacity-30 disabled:pointer-events-none">${label}</button>`;
+  return `
+  <div class="card-panel${openCls} flex flex-col justify-between gap-1.5 needs-license needs-online" data-panel="${d.dev_id}">
+    <div class="flex items-center justify-between shrink-0">
+      <span class="text-xs font-bold text-white flex items-center gap-1.5">
+        <i data-lucide="sliders" class="w-3.5 h-3.5 text-brand-400"></i>에어컨 리모컨</span>
+      <span class="text-[10px] text-slate-400 truncate">${esc([d.brand, d.model].filter(Boolean).join(" ") || "IR 리모컨")}</span>
+    </div>
+    <div class="bg-gradient-to-br from-slate-950 to-indigo-950/60 border border-indigo-500/30 rounded-xl px-2 py-1 text-center">
+      <span class="text-2xl font-black text-white font-mono">${ac.temp ?? 24}</span><span class="text-base text-indigo-400 font-black">°C</span>
+      <span class="text-[10px] font-mono text-slate-300 ml-2">전원 <b class="text-white">${ac.power ? "ON" : "OFF"}</b> · ${MODE_LABEL[ac.mode] || ac.mode || "—"} · 팬 ${FAN_LABEL[ac.fan] || ac.fan || "—"}</span>
+    </div>
+    <div class="grid grid-cols-3 gap-1.5">
+      <button onclick="remoteCmdFor(${d.dev_id}, {temp:'-'})" class="touch-btn py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-white"><i data-lucide="minus" class="w-4 h-4 mx-auto"></i></button>
+      <button onclick="remoteCmdFor(${d.dev_id}, {power:'toggle'})" class="touch-btn py-1.5 ${ac.power ? "bg-rose-600 hover:bg-rose-500" : "bg-emerald-600 hover:bg-emerald-500"} text-white rounded-xl font-bold text-[11px]">${ac.power ? "전원 OFF" : "전원 ON"}</button>
+      <button onclick="remoteCmdFor(${d.dev_id}, {temp:'+'})" class="touch-btn py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-white"><i data-lucide="plus" class="w-4 h-4 mx-auto"></i></button>
+    </div>
+    <div class="grid grid-cols-5 gap-1">
+      ${modeBtn("cool", "냉방", "bg-indigo-600/30 border border-indigo-500/40 text-indigo-200", "")}
+      ${modeBtn("auto", "자동", "bg-amber-600/20 border border-amber-500/30 text-amber-300", na)}
+      ${modeBtn("heat", "난방", "bg-rose-600/20 border border-rose-500/30 text-rose-300", "")}
+      ${modeBtn("dry", "제습", "bg-cyan-600/20 border border-cyan-500/30 text-cyan-300", na)}
+      <button onclick="remoteCmdFor(${d.dev_id}, {mode:'cool',temp:18,fan:'high',power:1})" ${na}
+              class="touch-btn py-1.5 rounded-lg text-[11px] font-bold bg-gradient-to-r from-indigo-600 to-cyan-500 text-white disabled:opacity-30 disabled:pointer-events-none">터보</button>
+    </div>
+    <div class="space-y-0.5">
+      <span class="text-[10px] text-slate-400 block">바람 세기${raw ? ' <span class="text-slate-500">— 이 에어컨은 자동만 지원</span>' : ""}</span>
+      <div class="grid grid-cols-4 gap-1 text-[10px] font-semibold">
+        ${["auto","low","mid","high"].map((f) => `
+          <button onclick="remoteCmdFor(${d.dev_id}, {fan:'${f}'})" ${f !== "auto" ? na : ""}
+                  class="touch-btn py-1 rounded-lg ${ac.fan === f ? "bg-cyan-500 text-slate-950" : "bg-slate-800 hover:bg-indigo-600 text-slate-200"} disabled:opacity-30 disabled:pointer-events-none">${FAN_LABEL[f].replace(/\(.+\)/, "")}</button>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+function patchLive(d) {
+  const card = document.querySelector(`[data-dev="${d.dev_id}"]`);
+  if (!card) return;
+  const fault = d.latest?.fault;
+  card.querySelector('[data-live="temp"]').textContent = (!fault && d.latest) ? d.latest.temp.toFixed(1) + "°C" : "—";
+  card.querySelector('[data-live="hum"]').textContent = (!fault && d.latest) ? Math.round(d.latest.hum) + "%" : "—";
+  if (card.classList.contains("dev-offline") && deviceOnline(d)) renderGrid();
+}
+
+// stale sweep: dim cards whose stream stopped
 setInterval(() => {
-  $("serverClock").textContent = new Date().toLocaleTimeString("ko-KR", { hour12: false });
-}, 1000);
+  if (!S.store) return;
+  let dirty = false;
+  document.querySelectorAll("[data-dev]").forEach((card) => {
+    const d = S.store.devices.get(Number(card.dataset.dev));
+    if (d && !deviceOnline(d) && !card.classList.contains("dev-offline")) dirty = true;
+  });
+  if (dirty) renderAll();
+}, 3000);
+
+// ── controls ─────────────────────────────────────────────────────────
+function guard() {
+  if (S.restricted) { toast("구독이 만료되어 제어할 수 없습니다. 본사에 문의하세요."); return false; }
+  if (!S.store.gatewayOnline) { toast("매장 게이트웨이가 오프라인입니다."); return false; }
+  return true;
+}
+
+function sendWs(payload) {
+  if (S.ws?.readyState === WebSocket.OPEN) S.ws.send(JSON.stringify(payload));
+  else toast("서버 연결이 끊겼습니다. 재연결 중…");
+}
+
+function devControl(devId, fields) {
+  if (!guard()) return;
+  const blocked = rawBlockMessage(S.store.devices.get(devId), fields);
+  if (blocked) { toast(blocked); return; }
+  sendWs({ type: "ac_control", target_id: devId, ...fields });
+}
+
+// ── drag-reorder: grab a card by its grip handle and drop it in place.
+// The final order is persisted server-side (devices.sort_order in SQLite), so
+// it survives refreshes and restarts and shows the same on every screen.
+let dragCard = null;
+
+async function persistOrder(order) {
+  order.forEach((id, idx) => {          // optimistic: keep local state in step
+    const d = S.store.devices.get(id);
+    if (d) d.sort_order = idx;
+  });
+  try {
+    await api(`/api/v1/stores/${encodeURIComponent(S.current)}/devices/order`, {
+      method: "POST", body: JSON.stringify({ order }) });
+  } catch (err) {
+    if (err.message !== "unauthorized") toast(err.message);
+    renderGrid();                       // server refused: repaint the old order
+  }
+}
+
+(function initDragReorder() {
+  const grid = $("device-grid");
+
+  grid.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest("[data-drag]");
+    if (!handle) return;
+    e.preventDefault();
+    dragCard = handle.closest("[data-dev]");
+    dragCard.classList.add("drag-active");
+    handle.setPointerCapture(e.pointerId);
+  });
+
+  grid.addEventListener("pointermove", (e) => {
+    if (!dragCard) return;
+    const over = document.elementFromPoint(e.clientX, e.clientY)
+      ?.closest?.("[data-dev]");
+    if (!over || over === dragCard) return;
+    const cards = [...grid.querySelectorAll("[data-dev]")];
+    // Move the grabbed card past the one under the pointer; the grid reflows
+    // live so the drop position is always what the user is looking at.
+    if (cards.indexOf(dragCard) < cards.indexOf(over)) over.after(dragCard);
+    else over.before(dragCard);
+  });
+
+  const finish = (commit) => {
+    if (!dragCard) return;
+    dragCard.classList.remove("drag-active");
+    dragCard = null;
+    if (commit)
+      persistOrder([...grid.querySelectorAll("[data-dev]")]
+        .map((c) => Number(c.dataset.dev)));
+    else renderGrid();
+  };
+  grid.addEventListener("pointerup", () => finish(true));
+  grid.addEventListener("pointercancel", () => finish(false));
+})();
+
+function batchControl(fields) {
+  if (!guard()) return;
+  sendWs({ type: "ac_control", target_id: "all", ...fields });
+}
+
+function batchTempDelta(delta) {
+  if (!guard()) return;
+  const devs = [...S.store.devices.values()];
+  const targets = devs.map((d) => d.ac_state?.temp ?? 24);
+  const avg = targets.length ? Math.round(targets.reduce((a, b) => a + b, 0) / targets.length) : 24;
+  batchControl({ temp: Math.max(16, Math.min(30, avg + delta)) });
+}
+
+async function toggleAutoMode() {
+  if (!guard()) return;
+  const next = !S.store.settings?.auto_temp_control;
+  try {
+    const body = await api(`/api/v1/stores/${encodeURIComponent(S.current)}/settings`, {
+      method: "POST", body: JSON.stringify({ auto_temp_control: next }) });
+    S.store.settings = body.settings;
+    batchControl(next ? { mode: "auto", power: 1, temp: 24, fan: "auto" } : { mode: "cool" });
+  } catch (err) { toast(err.message); }
+}
+
+// ── raw (학습 리모컨) devices ────────────────────────────────────────
+// A raw-replay device can only express learned state combinations; the slot
+// lists live in the shared AC-model catalog, fetched once a RAW device shows up.
+function isRawDevice(d) { return d?.protocol === "RAW"; }
+
+async function ensureRawCatalog() {
+  if (S.rawSlots) return;
+  if (![...S.store.devices.values()].some(isRawDevice)) return;
+  try {
+    const catalog = (await api("/api/v1/ac/models")).catalog;
+    sotaCatalog = catalog;
+    S.rawSlots = {};
+    catalog.forEach((b) => (b.models || []).forEach((m) => {
+      if (m.kind === "raw") S.rawSlots[m.id] = new Set(m.slots || []);
+    }));
+  } catch (_) { /* the server still refuses unlearned combos */ }
+}
+
+function rawSlotFor(power, mode, temp) {
+  if (!power) return "off";
+  if (mode !== "cool" && mode !== "heat") return null;
+  return `${mode}_${Math.min(30, Math.max(18, temp || 24))}`;
+}
+
+// Returns a user-facing message when the command cannot be expressed by the
+// device's learned codes, or null to let it through. With no catalog loaded
+// the server-side guard is the authority.
+function rawBlockMessage(d, fields) {
+  if (!isRawDevice(d)) return null;
+  if (fields.fan != null && fields.power == null && fields.mode == null
+      && fields.temp == null)
+    return "이 에어컨은 바람 세기 자동만 지원합니다.";
+  const slots = S.rawSlots?.[d.model_id];
+  if (!slots) return null;
+  const ac = d.ac_state || { power: 0, mode: "cool", temp: 24 };
+  const state = { power: ac.power, mode: ac.mode, temp: ac.temp ?? 24, ...fields };
+  if (!state.power && fields.power == null) state.power = 1; // implied turn-on
+  const slot = rawSlotFor(state.power ? 1 : 0, state.mode, state.temp);
+  if (slot === null)
+    return "이 에어컨은 냉방/난방만 지원합니다.";
+  if (!slots.has(slot))
+    return slot === "off" ? "이 에어컨은 전원 끄기를 지원하지 않습니다."
+      : `이 에어컨에서 지원하지 않는 설정입니다 (${MODE_LABEL[state.mode] || state.mode} ${state.temp}°C).`;
+  return null;
+}
+
+// ── in-card 리모컨 / 통계 panels (toggle, slide in from the left) ────
+function remoteCmdFor(devId, fields) {
+  const d = S.store.devices.get(devId);
+  const ac = d?.ac_state || { power: 0, temp: 24 };
+  const out = { ...fields };
+  const slots = isRawDevice(d) ? S.rawSlots?.[d.model_id] : null;
+  if (out.temp === "+" || out.temp === "-") {
+    const dir = out.temp === "+" ? 1 : -1;
+    let t = (ac.temp || 24) + dir;
+    if (slots && (ac.mode === "cool" || ac.mode === "heat")) {
+      // Step to the nearest learned temperature in that direction.
+      while (t >= 16 && t <= 30 && !slots.has(`${ac.mode}_${t}`)) t += dir;
+      if (t < 16 || t > 30) { toast("그 방향으로 설정 가능한 온도가 없습니다."); return; }
+    }
+    out.temp = Math.min(30, Math.max(16, t));
+  }
+  if (out.power === "toggle") out.power = ac.power ? 0 : 1;
+  devControl(devId, out);
+}
+
+function destroyCardChart(devId) {
+  if (S.cardCharts[devId]) {
+    S.cardCharts[devId].destroy();
+    delete S.cardCharts[devId];
+  }
+}
+
+function toggleCardPanel(devId, kind) {
+  const cur = S.cardPanels[devId];
+  if (cur && cur.kind === kind) {
+    // toggle off: the sheet sinks, then the card repaints without it.
+    // Only THIS card is touched -- other cards' panels stay as they are.
+    const el = document.querySelector(`[data-panel="${devId}"]`);
+    delete S.cardPanels[devId];
+    destroyCardChart(devId);
+    if (el) {
+      el.classList.remove("open");   // sheet sinks...
+      document.querySelector(`[data-zone="${devId}"]`)
+        ?.classList.remove("panel-open");   // ...and the controls come forward
+      setTimeout(renderGrid, 520);   // matches the .card-panel transition
+    } else {
+      renderGrid();
+    }
+    return;
+  }
+  if (kind === "remote" && S.restricted) {
+    toast("구독이 만료되어 리모컨이 잠겼습니다.");
+    return;
+  }
+  destroyCardChart(devId);
+  // toggle on (or switch stats<->remote on this card): render closed, animate in
+  const panel = { devId, kind, entering: true, mins: cur?.mins || 180 };
+  S.cardPanels[devId] = panel;
+  renderGrid();
+  panel.entering = false;
+  const el = document.querySelector(`[data-panel="${devId}"]`);
+  const zone = document.querySelector(`[data-zone="${devId}"]`);
+  if (el) requestAnimationFrame(() => requestAnimationFrame(() => {
+    el.classList.add("open");
+    zone?.classList.add("panel-open");
+  }));
+  if (kind === "stats") loadCardStats(devId);
+}
+
+function setCardStatsRange(devId, minutes) {
+  const panel = S.cardPanels[devId];
+  if (!panel) return;
+  panel.mins = minutes;
+  // Touch only this card: restyle its chips in place and refill its chart.
+  // A full renderGrid here would make every other card flicker.
+  document.querySelectorAll(`[data-panel="${devId}"] [data-mins]`).forEach((b) => {
+    const on = Number(b.dataset.mins) === minutes;
+    b.className = `px-2 py-0.5 rounded-lg text-[10px] font-bold ${on
+      ? "bg-brand-600 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`;
+  });
+  loadCardStats(devId);
+}
+
+async function loadCardStats(devId) {
+  const mins = S.cardPanels[devId]?.mins || 180;
+  let points = [];
+  try {
+    points = (await api(`/api/v1/stores/${encodeURIComponent(S.current)}/stats?minutes=${mins}&dev_id=${devId}`)).points;
+  } catch (err) { toast(err.message); return; }
+  const canvas = $(`card-stats-${devId}`);
+  if (!canvas || S.cardPanels[devId]?.kind !== "stats") return;   // closed meanwhile
+  const fmt = (ts) => {
+    const d = new Date(ts * 1000);
+    return mins <= 1440
+      ? d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })
+      : d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
+  };
+  destroyCardChart(devId);
+  S.cardCharts[devId] = new Chart(canvas.getContext("2d"), {
+    type: "line",
+    data: { labels: points.map((p) => fmt(p.ts)), datasets: [
+      { label: "온도 (°C)", data: points.map((p) => p.temp_avg), borderColor: "#818cf8",
+        backgroundColor: "rgba(129,140,248,0.15)", fill: true, tension: 0.3, pointRadius: 0 },
+      { label: "습도 (%)", data: points.map((p) => p.hum_avg), borderColor: "#22d3ee",
+        tension: 0.3, pointRadius: 0 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: "#94a3b8", boxWidth: 12, font: { size: 10 } } } },
+      scales: { x: { ticks: { color: "#64748b", maxTicksLimit: 5, font: { size: 9 } }, grid: { color: "rgba(71,85,105,.2)" } },
+                y: { ticks: { color: "#64748b", font: { size: 9 } }, grid: { color: "rgba(71,85,105,.2)" } } } }
+  });
+  const sub = $(`card-stats-sub-${devId}`);
+  if (sub) sub.textContent = points.length
+    ? `이 장비 · ${points.length}개 구간` : "이 장비의 수집된 통계가 아직 없습니다";
+}
+
+// ── sota modal (관리자: 에어컨 제조사·모델 선택) ─────────────────────
+let sotaDevId = null, sotaCatalog = null;
+
+async function openSotaModal(devId) {
+  sotaDevId = devId;
+  const d = S.store.devices.get(devId) || {};
+  $("sota-sub").textContent = `${d.name || "디바이스 " + devId} · 현재: ${d.model || "기본 펌웨어 (IR 미탑재)"}`;
+  $("sota-progress").classList.add("hidden");
+  $("sota-submit").disabled = false;
+  try {
+    if (!sotaCatalog) sotaCatalog = (await api("/api/v1/ac/models")).catalog;
+  } catch (err) { toast(err.message); return; }
+  $("sota-brand").innerHTML = sotaCatalog.map((b, i) =>
+    `<option value="${i}">${esc(b.brand)}</option>`).join("");
+  fillSotaModels();
+  showModal("sota-modal");
+}
+
+function fillSotaModels() {
+  const brand = sotaCatalog[Number($("sota-brand").value)] || { models: [] };
+  $("sota-model").innerHTML = brand.models.map((m) => {
+    const tag = m.kind === "raw"
+      ? ` — 리모컨 학습 ${(m.slots || []).length}/${m.slot_total || 27}` : "";
+    return `<option value="${esc(m.id)}">${esc(m.name)}${tag}</option>`;
+  }).join("");
+}
+$("sota-brand").addEventListener("change", fillSotaModels);
+
+$("sota-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (sotaDevId == null) return;
+  if (!S.store.gatewayOnline) { toast("매장 게이트웨이가 오프라인입니다."); return; }
+  const brand = sotaCatalog[Number($("sota-brand").value)];
+  const model = brand?.models.find((m) => m.id === $("sota-model").value);
+  if (!model) return;
+  $("sota-submit").disabled = true;
+  $("sota-progress").classList.remove("hidden");
+  $("sota-stage").textContent = "배포 요청 전송";
+  sendWs({ type: "sota_deploy", target_id: sotaDevId, brand: brand.brand,
+           model: model.name, model_id: model.id, protocol: model.protocol });
+});
+
+const SOTA_STAGE = { requested:"배포 요청 전송", prepare:"펌웨어 준비", serve:"OTA 서버 게시",
+  notify:"디바이스에 지시", flashing:"플래싱 중", verify:"검증 대기", done:"완료", failed:"실패" };
+
+function onSotaProgress(msg) {
+  if ($("sota-modal").classList.contains("hidden")) return;
+  const pct = Math.max(0, Math.min(100, Number(msg.percent) || 0));
+  $("sota-stage").textContent = SOTA_STAGE[msg.stage] || msg.stage || "진행 중";
+  $("sota-percent").textContent = `${msg.stage === "done" ? 100 : pct}%`;
+  $("sota-bar").style.width = `${msg.stage === "done" ? 100 : pct}%`;
+  if (msg.stage === "done") {
+    $("sota-message").textContent = "배포 완료 — IR 원격 제어가 활성화되었습니다.";
+    $("sota-submit").disabled = false;
+  } else if (msg.stage === "failed" || msg.ok === false) {
+    $("sota-message").textContent = msg.message || "배포 중 오류가 발생했습니다.";
+    $("sota-submit").disabled = false;
+  } else if (msg.message) {
+    $("sota-message").textContent = msg.message;
+  }
+}
+
+// ── device edit modal (장비명·위치 수정) ─────────────────────────────
+let editingDevId = null;
+
+function openDeviceEditModal(devId) {
+  editingDevId = devId;
+  const d = S.store.devices.get(devId) || {};
+  $("device-edit-sub").textContent = `디바이스 #${devId}`;
+  $("dev-name").value = d.name || `디바이스 ${devId}`;
+  $("dev-location").value = d.location || "";
+  showModal("device-edit-modal");
+}
+
+$("device-edit-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (editingDevId == null) return;
+  // The server broadcasts device_meta back, which repaints every open view.
+  sendWs({ type: "device_update", dev_id: editingDevId,
+           name: $("dev-name").value.trim() || `디바이스 ${editingDevId}`,
+           location: $("dev-location").value.trim() });
+  closeModal("device-edit-modal");
+});
+
+// ── account modal (비밀번호 변경) ────────────────────────────────────
+function openAccountModal() {
+  $("account-form").reset();
+  $("account-error").classList.add("hidden");
+  $("account-ok").classList.add("hidden");
+  $("account-sub").textContent = S.me.role === "owner"
+    ? `점주 계정 (${S.me.owner_id}) 비밀번호를 변경합니다.`
+    : `매장 계정 (${S.me.store_id}) 비밀번호를 변경합니다.`;
+  showModal("account-modal");
+}
+
+$("account-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("account-error").classList.add("hidden");
+  $("account-ok").classList.add("hidden");
+  const newPw = $("acc-new").value;
+  if (newPw !== $("acc-new2").value) {
+    const p = $("account-error");
+    p.textContent = "새 비밀번호가 서로 일치하지 않습니다.";
+    p.classList.remove("hidden");
+    return;
+  }
+  $("acc-submit").disabled = true;
+  try {
+    const body = await api("/api/v1/auth/password", {
+      method: "POST", body: JSON.stringify({
+        current_password: $("acc-current").value, new_password: newPw }) });
+    $("account-form").reset();
+    const p = $("account-ok");
+    p.textContent = body.message || "비밀번호가 변경되었습니다.";
+    p.classList.remove("hidden");
+  } catch (err) {
+    if (err.message !== "unauthorized") {
+      const p = $("account-error");
+      p.textContent = err.message;
+      p.classList.remove("hidden");
+    }
+  } finally {
+    $("acc-submit").disabled = false;
+  }
+});
+
+// ── stats modal ──────────────────────────────────────────────────────
+function openStatsModal() {
+  $("stats-title").textContent = `${S.store.name || S.current} 온·습도 통계`;
+  showModal("stats-modal");
+  loadStats(180);
+}
+
+async function loadStats(minutes) {
+  document.querySelectorAll(".stats-period").forEach((b) => {
+    b.className = Number(b.dataset.mins) === minutes
+      ? "stats-period px-3 py-1 rounded-lg bg-brand-600 text-white"
+      : "stats-period px-3 py-1 rounded-lg text-slate-400 hover:text-white";
+  });
+  let points = [];
+  try {
+    points = (await api(`/api/v1/stores/${encodeURIComponent(S.current)}/stats?minutes=${minutes}`)).points;
+  } catch (err) { toast(err.message); return; }
+
+  const fmt = (ts) => {
+    const d = new Date(ts * 1000);
+    return minutes <= 1440
+      ? d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })
+      : d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })
+        + " " + d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+  const labels = points.map((p) => fmt(p.ts));
+  const ctx = $("stats-chart").getContext("2d");
+  if (S.statsChart) S.statsChart.destroy();
+  S.statsChart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "평균 온도 (°C)", data: points.map((p) => p.temp_avg), borderColor: "#818cf8",
+        backgroundColor: "rgba(129,140,248,0.15)", fill: true, tension: 0.3, pointRadius: 0 },
+      { label: "평균 습도 (%)", data: points.map((p) => p.hum_avg), borderColor: "#22d3ee",
+        tension: 0.3, pointRadius: 0 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: "#94a3b8" } } },
+      scales: { x: { ticks: { color: "#64748b", maxTicksLimit: 8 }, grid: { color: "rgba(71,85,105,.2)" } },
+                y: { ticks: { color: "#64748b" }, grid: { color: "rgba(71,85,105,.2)" } } } }
+  });
+  $("stats-sub").textContent = points.length
+    ? `전 장비 평균 · ${points.length}개 구간` : "수집된 통계가 아직 없습니다";
+}
+
+// ── all-stores overview (owner) ──────────────────────────────────────
+function setViewMode(mode) {
+  S.viewMode = mode;
+  const single = mode === "SINGLE";
+  $("btn-mode-single").className = `touch-btn px-3 py-1.5 rounded-lg ${single ? "bg-brand-600 text-white shadow" : "text-slate-400 hover:text-white"}`;
+  $("btn-mode-all").className = `touch-btn px-3 py-1.5 rounded-lg ${!single ? "bg-brand-600 text-white shadow" : "text-slate-400 hover:text-white"}`;
+  $("section-single-store").classList.toggle("hidden", !single);
+  $("section-all-stores").classList.toggle("hidden", single);
+  $("store-select-wrapper").classList.toggle("hidden", !single || S.storeIds.length < 2);
+  if (!single) refreshOverview();
+  lucide.createIcons();
+}
+
+function selectStore(id) {
+  if (id === S.current) return;
+  S.current = id;
+  history.replaceState(null, "", `/?store_id=${encodeURIComponent(id)}`);
+  connect(id);
+}
+
+async function refreshOverview() {
+  const results = await Promise.allSettled(
+    S.storeIds.map((id) => api(`/api/v1/stores/${encodeURIComponent(id)}/status`)));
+  results.forEach((r, i) => { if (r.status === "fulfilled") S.overview.set(S.storeIds[i], r.value); });
+  renderOverview();
+}
+
+function renderOverview() {
+  const grid = $("all-stores-grid");
+  grid.innerHTML = S.storeIds.map((id) => {
+    const s = S.overview.get(id);
+    if (!s) return "";
+    const lic = s.license || {};
+    const devs = s.devices || [];
+    const live = devs.map((d) => d.latest).filter((l) => l && !l.fault);
+    const avgT = live.length ? (live.reduce((a, l) => a + l.temp, 0) / live.length).toFixed(1) + "°C" : "—";
+    const avgH = live.length ? Math.round(live.reduce((a, l) => a + l.hum, 0) / live.length) + "%" : "—";
+    const on = devs.filter((d) => d.ac_state?.power).length;
+    const licBadge = lic.status === "active"
+      ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">정상 (D-${lic.days_remaining ?? "—"})</span>`
+      : lic.status === "grace"
+      ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">유예 D-${lic.days_remaining}</span>`
+      : `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300">만료/제약</span>`;
+    return `
+    <div class="glass-panel rounded-3xl p-5 border border-slate-800 space-y-4 hover:border-slate-700 transition flex flex-col justify-between">
+      <div>
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="font-bold text-white text-base truncate">${esc(s.store_name || id)}</h3>
+          ${licBadge}
+        </div>
+        <p class="text-xs text-slate-400 mt-0.5 truncate">${esc(s.address || id)}${s.plan ? " · " + esc(s.plan) : ""}</p>
+      </div>
+      <div class="grid grid-cols-3 gap-2 bg-slate-900/90 rounded-2xl p-3 text-center border border-slate-800">
+        <div><span class="text-[10px] text-slate-400 block">평균 온도</span><span class="text-lg font-black text-indigo-400 font-mono">${avgT}</span></div>
+        <div><span class="text-[10px] text-slate-400 block">평균 습도</span><span class="text-lg font-black text-cyan-400 font-mono">${avgH}</span></div>
+        <div><span class="text-[10px] text-slate-400 block">에어컨</span><span class="text-lg font-black text-emerald-400 font-mono">${on}/${devs.length}대</span></div>
+      </div>
+      <div class="pt-2 border-t border-slate-800 flex items-center justify-between gap-2">
+        <span class="text-xs text-slate-400">게이트웨이:
+          <strong class="${s.gateway_online ? "text-emerald-400" : "text-rose-400"}">${s.gateway_online ? "온라인" : "오프라인"}</strong></span>
+        <button onclick="jumpToStore('${esc(id)}')" class="touch-btn px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow">
+          <span>상세 제어</span><i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+    </div>`;
+  }).join("");
+  lucide.createIcons();
+}
+
+function jumpToStore(id) {
+  selectStore(id);
+  $("header-store-select").value = id;
+  setViewMode("SINGLE");
+}
+
+async function batchAllStores(action) {
+  const fields = action === "OFF" ? { power: 0 }
+    : { power: 1, mode: "auto", temp: 24, fan: "auto" };
+  const results = await Promise.allSettled(S.storeIds.map((id) =>
+    api(`/api/v1/stores/${encodeURIComponent(id)}/ac`, {
+      method: "POST", body: JSON.stringify({ target_id: "all", ...fields }) })));
+  const ok = results.filter((r) => r.status === "fulfilled").length;
+  const failed = results.length - ok;
+  toast(failed
+    ? `${ok}개 매장 적용, ${failed}개 매장 실패 (게이트웨이 오프라인 또는 구독 제약)`
+    : `${ok}개 매장에 일괄 적용했습니다.`);
+  refreshOverview();
+}
+
+setInterval(() => { if (S.viewMode === "ALL") refreshOverview(); }, 30_000);
+
+// ── modal plumbing ───────────────────────────────────────────────────
+function showModal(id) { const m = $(id); m.classList.remove("hidden"); m.classList.add("flex"); lucide.createIcons(); }
+function closeModal(id) {
+  const m = $(id); m.classList.add("hidden"); m.classList.remove("flex");
+}
+document.querySelectorAll("#stats-modal, #account-modal, #device-edit-modal, #sota-modal").forEach((m) =>
+  m.addEventListener("click", (e) => { if (e.target === m) closeModal(m.id); }));
+
+document.addEventListener("DOMContentLoaded", boot);
 </script>
 </body>
 </html>

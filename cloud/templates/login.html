@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#090d16">
+  <title>매장 로그인 | Atom Air Store Portal</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {
+        colors: {
+          brand: { 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' },
+          appBg: '#090d16', cardBg: '#111827'
+        },
+        fontFamily: {
+          sans: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+          mono: ['JetBrains Mono', 'Consolas', 'monospace']
+        }
+      } }
+    }
+  </script>
+
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    body {
+      font-family: 'Pretendard', sans-serif;
+      background: radial-gradient(circle at 50% 10%, #151f38 0%, #090d16 75%);
+      min-height: 100vh; color: #f1f5f9;
+    }
+    .glass-card {
+      background: rgba(17, 24, 39, 0.88);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+    }
+    .touch-btn { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
+    .touch-btn:active { transform: scale(0.97); }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4 selection:bg-brand-500 selection:text-white">
+
+  <div class="fixed top-1/4 left-1/4 w-96 h-96 bg-brand-500/15 rounded-full blur-3xl pointer-events-none -z-10"></div>
+  <div class="fixed bottom-1/4 right-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none -z-10"></div>
+
+  <div class="glass-card rounded-3xl max-w-md w-full p-7 md:p-8 space-y-6 relative overflow-hidden">
+
+    <div class="text-center space-y-2">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-brand-600 via-indigo-500 to-cyan-400 text-white shadow-xl shadow-brand-500/30 mb-2">
+        <i data-lucide="store" class="w-8 h-8"></i>
+      </div>
+      <h1 class="text-2xl font-black tracking-tight text-white">Atom Air 매장 포털</h1>
+      <p class="text-xs text-slate-400">보유하신 매장의 온·습도와 에어컨을 통합 관제합니다.</p>
+    </div>
+
+    <div id="loginView">
+    <form id="loginForm" class="space-y-4" autocomplete="on">
+      <div class="space-y-1.5">
+        <label for="loginId" class="text-xs font-semibold text-slate-300 block">매장 ID</label>
+        <div class="relative">
+          <i data-lucide="user" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input type="text" id="loginId" name="username" required placeholder="예: S001"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500 font-mono">
+        </div>
+      </div>
+
+      <div class="space-y-1.5">
+        <label for="password" class="text-xs font-semibold text-slate-300 block">비밀번호</label>
+        <div class="relative">
+          <i data-lucide="lock" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input type="password" id="password" name="password" required placeholder="비밀번호"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn"
+              class="touch-btn w-full py-3 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-bold rounded-2xl text-sm shadow-lg shadow-brand-500/25 flex items-center justify-center gap-2 mt-2 disabled:opacity-50">
+        <i data-lucide="log-in" class="w-4 h-4"></i>
+        <span>매장 관제 센터 접속</span>
+      </button>
+
+      <p id="errorMsg" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2.5"></p>
+      <p id="infoMsg" class="hidden text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2.5"></p>
+    </form>
+
+    <div class="text-center text-xs text-slate-400 pt-3 border-t border-slate-800/80">
+      매장이 아직 등록되지 않았나요?
+      <button type="button" id="showRegister" class="text-cyan-300 hover:underline font-semibold ml-1">매장 등록 신청</button>
+    </div>
+    </div><!-- /loginView -->
+
+    <!-- 매장 등록 신청: 접수 후 관리자 승인이 나야 로그인할 수 있다 -->
+    <div id="registerView" class="hidden">
+    <form id="registerForm" class="space-y-4" autocomplete="off">
+      <div class="text-center">
+        <h2 class="text-base font-bold text-white">매장 등록 신청</h2>
+        <p class="text-[11px] text-slate-400 mt-1">신청 후 <span class="text-cyan-300 font-semibold">관리자 승인</span>이 완료되면 아래 매장 ID와 비밀번호로 로그인할 수 있습니다.</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="space-y-1.5">
+          <label for="regId" class="text-xs font-semibold text-slate-300 block">매장 ID</label>
+          <input type="text" id="regId" required placeholder="예: S002" pattern="[A-Za-z0-9_-]{2,32}"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 title="영문/숫자/-/_ 2~32자"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500 font-mono">
+        </div>
+        <div class="space-y-1.5">
+          <label for="regName" class="text-xs font-semibold text-slate-300 block">매장명</label>
+          <input type="text" id="regName" required maxlength="64" placeholder="예: 홍대점"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+        </div>
+      </div>
+
+      <div class="space-y-1.5">
+        <label for="regAddress" class="text-xs font-semibold text-slate-300 block">주소 <span class="text-slate-500 font-normal">(선택)</span></label>
+        <input type="text" id="regAddress" maxlength="128" placeholder="예: 서울 마포구 어울마당로 88"
+               class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+      </div>
+
+      <div class="space-y-1.5">
+        <label for="regPhone" class="text-xs font-semibold text-slate-300 block">연락처 <span class="text-slate-500 font-normal">(선택)</span></label>
+        <input type="tel" id="regPhone" maxlength="32" placeholder="010-0000-0000"
+               class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500 font-mono">
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="space-y-1.5">
+          <label for="regPassword" class="text-xs font-semibold text-slate-300 block">비밀번호</label>
+          <input type="password" id="regPassword" required minlength="4" maxlength="64" placeholder="4자 이상"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+        </div>
+        <div class="space-y-1.5">
+          <label for="regPassword2" class="text-xs font-semibold text-slate-300 block">비밀번호 확인</label>
+          <input type="password" id="regPassword2" required minlength="4" maxlength="64" placeholder="한 번 더 입력"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-brand-500">
+        </div>
+      </div>
+
+      <button type="submit" id="regSubmitBtn"
+              class="touch-btn w-full py-3 bg-gradient-to-r from-cyan-600 to-brand-600 hover:from-cyan-500 hover:to-brand-500 text-white font-bold rounded-2xl text-sm shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2 mt-2 disabled:opacity-50">
+        <i data-lucide="send" class="w-4 h-4"></i>
+        <span>등록 신청하기</span>
+      </button>
+
+      <p id="regErrorMsg" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2.5"></p>
+    </form>
+
+    <div class="text-center text-xs text-slate-400 pt-4 mt-4 border-t border-slate-800/80">
+      이미 승인된 매장이신가요?
+      <button type="button" id="showLogin" class="text-brand-400 hover:underline font-semibold ml-1">로그인으로 돌아가기</button>
+    </div>
+    </div><!-- /registerView -->
+
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => lucide.createIcons());
+
+    const form = document.getElementById('loginForm');
+    const errorMsg = document.getElementById('errorMsg');
+    const submitBtn = document.getElementById('submitBtn');
+
+    const infoMsg = document.getElementById('infoMsg');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMsg.classList.add('hidden');
+      infoMsg.classList.add('hidden');
+      submitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            store_id: document.getElementById('loginId').value.trim(),
+            password: document.getElementById('password').value,
+          }),
+        });
+        if (res.ok) { location.href = '/'; return; }
+        const body = await res.json().catch(() => ({}));
+        errorMsg.textContent = body.detail || '로그인에 실패했습니다.';
+        errorMsg.classList.remove('hidden');
+      } catch (_) {
+        errorMsg.textContent = '서버에 연결할 수 없습니다.';
+        errorMsg.classList.remove('hidden');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    // ── 매장 등록 신청 ─────────────────────────────────────────────
+    const loginView = document.getElementById('loginView');
+    const registerView = document.getElementById('registerView');
+    const regForm = document.getElementById('registerForm');
+    const regErrorMsg = document.getElementById('regErrorMsg');
+    const regSubmitBtn = document.getElementById('regSubmitBtn');
+
+    function showView(register) {
+      loginView.classList.toggle('hidden', register);
+      registerView.classList.toggle('hidden', !register);
+      regErrorMsg.classList.add('hidden');
+      lucide.createIcons();
+    }
+    document.getElementById('showRegister').addEventListener('click', () => showView(true));
+    document.getElementById('showLogin').addEventListener('click', () => showView(false));
+
+    regForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      regErrorMsg.classList.add('hidden');
+      const password = document.getElementById('regPassword').value;
+      if (password !== document.getElementById('regPassword2').value) {
+        regErrorMsg.textContent = '비밀번호가 서로 일치하지 않습니다.';
+        regErrorMsg.classList.remove('hidden');
+        return;
+      }
+      regSubmitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            store_id: document.getElementById('regId').value.trim(),
+            name: document.getElementById('regName').value.trim(),
+            address: document.getElementById('regAddress').value.trim() || null,
+            phone: document.getElementById('regPhone').value.trim() || null,
+            password,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          regForm.reset();
+          showView(false);
+          // Pre-fill the issued code so the applicant cannot lose it.
+          if (body.store_id) document.getElementById('loginId').value = body.store_id;
+          infoMsg.textContent = body.message
+            || '신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.';
+          infoMsg.classList.remove('hidden');
+          return;
+        }
+        regErrorMsg.textContent = body.detail || '신청에 실패했습니다.';
+        regErrorMsg.classList.remove('hidden');
+      } catch (_) {
+        regErrorMsg.textContent = '서버에 연결할 수 없습니다.';
+        regErrorMsg.classList.remove('hidden');
+      } finally {
+        regSubmitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

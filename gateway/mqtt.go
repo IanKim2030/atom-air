@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -23,13 +25,18 @@ type MQTTBridge struct {
 	topicSensor string
 	topicAC     string
 	topicOTA    string
+	topicLearn  string
+	topicIR     string
 }
 
-func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte)) *MQTTBridge {
+func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
+	onIREvent func(uint8, []byte)) *MQTTBridge {
 	b := &MQTTBridge{
 		topicSensor: fmt.Sprintf("atom/%s/sensor", storeID),
 		topicAC:     fmt.Sprintf("atom/%s/ac", storeID),
 		topicOTA:    fmt.Sprintf("atom/%s/ota", storeID),
+		topicLearn:  fmt.Sprintf("atom/%s/learn", storeID),
+		topicIR:     fmt.Sprintf("atom/%s/ir", storeID),
 	}
 
 	opts := mqtt.NewClientOptions().
@@ -47,11 +54,31 @@ func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte)) 
 		frame := append([]byte(nil), msg.Payload()...)
 		onFrame(frame)
 	})
+	// IR events (learn captures, IRDATA acks) are JSON, so they get their own
+	// handler: the default handler feeds the sensor ingest loop, which would
+	// try to parse them as 12-byte binary frames.
+	irHandler := func(_ mqtt.Client, msg mqtt.Message) {
+		parts := strings.Split(msg.Topic(), "/")
+		id, err := strconv.Atoi(parts[len(parts)-1])
+		if err != nil || id < 0 || id > 255 {
+			slog.Warn("IR event on unparseable topic", "topic", msg.Topic())
+			return
+		}
+		payload := append([]byte(nil), msg.Payload()...)
+		if onIREvent != nil {
+			onIREvent(uint8(id), payload)
+		}
+	}
+
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		b.connected.Store(true)
 		filters := map[string]byte{b.topicSensor: 0, b.topicSensor + "/+": 0}
 		if tok := c.SubscribeMultiple(filters, nil); tok.Wait() && tok.Error() != nil {
 			slog.Error("MQTT subscribe failed", "err", tok.Error())
+			return
+		}
+		if tok := c.Subscribe(b.topicIR+"/+", 1, irHandler); tok.Wait() && tok.Error() != nil {
+			slog.Error("MQTT IR subscribe failed", "err", tok.Error())
 			return
 		}
 		slog.Info("MQTT connected", "broker", fmt.Sprintf("%s:%d", host, port),
@@ -93,6 +120,21 @@ func (b *MQTTBridge) PublishAC(targetID uint8, packet []byte) bool {
 	}
 	topic := fmt.Sprintf("%s/%d", b.topicAC, targetID)
 	tok := b.client.Publish(topic, 1, false, packet)
+	return tok.WaitTimeout(3*time.Second) && tok.Error() == nil
+}
+
+// PublishLearn puts one device into (or out of) IR learn mode.
+func (b *MQTTBridge) PublishLearn(targetID uint8, cmd any) bool {
+	if !b.Connected() {
+		return false
+	}
+	payload, err := json.Marshal(cmd)
+	if err != nil {
+		slog.Error("could not encode learn command", "err", err)
+		return false
+	}
+	topic := fmt.Sprintf("%s/%d", b.topicLearn, targetID)
+	tok := b.client.Publish(topic, 1, false, payload)
 	return tok.WaitTimeout(3*time.Second) && tok.Error() == nil
 }
 

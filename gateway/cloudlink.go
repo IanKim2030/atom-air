@@ -24,6 +24,13 @@ type Command struct {
 	ModelID    string          `json:"model_id"`
 	Protocol   string          `json:"protocol"`
 	State      json.RawMessage `json:"state"`
+	// IR learning (LEARN_IR / LEARN_CANCEL)
+	SessionID string `json:"session_id"`
+	Slot      string `json:"slot"`
+	TimeoutS  int    `json:"timeout_s"`
+	// DEPLOY_IRDATA carries the learned code bundle inline; the gateway writes
+	// it into the firmware dir verbatim and serves it over the OTA HTTP server.
+	Bundle json.RawMessage `json:"bundle"`
 }
 
 type outMsg struct {

@@ -4,8 +4,10 @@ This is the executable specification of what the ESP32 firmware must do, and it
 lets the whole pipeline run without hardware:
 
     publishes  atom/{store}/sensor        12-byte SensorPacket, 1 Hz
+    publishes  atom/{store}/ir/{dev_id}   JSON IR events (learn capture, IRDATA ack)
     subscribes atom/{store}/ac/{dev_id}   8-byte AC control frame
-    subscribes atom/{store}/ota/{dev_id}  JSON OTA command
+    subscribes atom/{store}/ota/{dev_id}  JSON OTA / IRDATA command
+    subscribes atom/{store}/learn/{dev_id} JSON learn-mode command
 
 It behaves like the real thing in the ways that matter:
 
@@ -44,6 +46,15 @@ except ImportError:
     sys.exit("paho-mqtt is required: pip install paho-mqtt")
 
 
+def slot_for_state(power: int, mode: str, temp: int) -> str | None:
+    """Mirror of the firmware's state->slot mapping for raw-mode devices."""
+    if not power:
+        return "off"
+    if mode not in ("cool", "heat"):
+        return None
+    return f"{mode}_{min(max(int(temp), 18), 30)}"
+
+
 def ambient_light(now: datetime) -> float:
     """A store's illuminance over the day: dim at night, bright at midday."""
     hour = now.hour + now.minute / 60
@@ -64,6 +75,8 @@ class FakeDevice:
         self.light = ambient_light(datetime.now())
         self.ir_ready = False        # set only after a successful OTA
         self.protocol = None         # which IR protocol was flashed
+        self.model_id = None         # raw-mode model the IRDATA bundle belongs to
+        self.ir_slots: list[str] = []  # learned combinations (raw mode)
         self.ac_on = False
         self.setpoint = 24.0
         self.faulted = False
@@ -103,11 +116,14 @@ class FakeAtom:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         rng = random.Random(args.seed)
+        first = args.first_dev
         self.devices = {i: FakeDevice(i, random.Random(rng.random()))
-                        for i in range(1, args.devices + 1)}
+                        for i in range(first, first + args.devices)}
         self.topic_sensor = f"atom/{args.store_id}/sensor"
         self.topic_ac = f"atom/{args.store_id}/ac"
         self.topic_ota = f"atom/{args.store_id}/ota"
+        self.topic_learn = f"atom/{args.store_id}/learn"
+        self.topic_ir = f"atom/{args.store_id}/ir"
         self.state_path = Path(args.state_file)
         self.stop = threading.Event()
         self._load_state()
@@ -135,8 +151,11 @@ class FakeAtom:
             if dev is not None and entry.get("ir_ready"):
                 dev.ir_ready = True
                 dev.protocol = entry.get("protocol")
+                dev.model_id = entry.get("model_id")
+                dev.ir_slots = list(entry.get("ir_slots") or [])
+                extra = f", {len(dev.ir_slots)} learned codes" if dev.ir_slots else ""
                 print(f"[atom] dev{dev.dev_id} retains flashed firmware "
-                      f"({dev.protocol}) from a previous run")
+                      f"({dev.protocol}{extra}) from a previous run")
 
     def _save_state(self) -> None:
         saved = {}
@@ -146,7 +165,8 @@ class FakeAtom:
             except (OSError, json.JSONDecodeError):
                 saved = {}
         saved[self.args.store_id] = {
-            str(d.dev_id): {"ir_ready": d.ir_ready, "protocol": d.protocol}
+            str(d.dev_id): {"ir_ready": d.ir_ready, "protocol": d.protocol,
+                            "model_id": d.model_id, "ir_slots": d.ir_slots}
             for d in self.devices.values()
         }
         try:
@@ -158,9 +178,11 @@ class FakeAtom:
     # -- MQTT --------------------------------------------------------------
 
     def _on_connect(self, client, *_):
-        client.subscribe([(f"{self.topic_ac}/+", 1), (f"{self.topic_ota}/+", 1)])
+        client.subscribe([(f"{self.topic_ac}/+", 1), (f"{self.topic_ota}/+", 1),
+                          (f"{self.topic_learn}/+", 1)])
         print(f"[atom] connected to {self.args.broker}:{self.args.port}, "
-              f"listening on {self.topic_ac}/+ and {self.topic_ota}/+")
+              f"listening on {self.topic_ac}/+, {self.topic_ota}/+ "
+              f"and {self.topic_learn}/+")
 
     def _on_disconnect(self, *_):
         print("[atom] broker connection lost; paho will retry")
@@ -180,6 +202,9 @@ class FakeAtom:
         elif msg.topic.startswith(self.topic_ota):
             threading.Thread(target=self._handle_ota, args=(dev, msg.payload),
                              daemon=True).start()
+        elif msg.topic.startswith(self.topic_learn):
+            threading.Thread(target=self._handle_learn, args=(dev, msg.payload),
+                             daemon=True).start()
 
     def _handle_ac(self, dev: FakeDevice, payload: bytes) -> None:
         try:
@@ -187,9 +212,21 @@ class FakeAtom:
         except p.PacketError as exc:
             print(f"[atom] dev{dev.dev_id} REJECTED AC frame: {exc}")
             return
+        if not dev.ir_ready:
+            note = "IR 미탑재 -- 무시했을 것"
+        elif dev.protocol == "RAW":
+            slot = slot_for_state(cmd["power"], cmd["mode"], cmd["temp"])
+            if slot in dev.ir_slots:
+                note = f"raw 재생: {slot} ({dev.model_id})"
+            else:
+                # The real firmware would find no such slot in SPIFFS and skip.
+                note = f"미학습 조합 {slot!r} -- 무시했을 것"
+                print(f"[atom] dev{dev.dev_id} AC  {payload.hex()}  [{note}]")
+                return
+        else:
+            note = f"IR 송신 ({dev.protocol})"
         dev.ac_on = bool(cmd["power"])
         dev.setpoint = float(cmd["temp"])
-        note = f"IR 송신 ({dev.protocol})" if dev.ir_ready else "IR 미탑재 -- 무시했을 것"
         print(f"[atom] dev{dev.dev_id} AC  {payload.hex()}  -> power={cmd['power']} "
               f"mode={cmd['mode']} temp={cmd['temp']} fan={cmd['fan']}  [{note}]")
 
@@ -198,6 +235,9 @@ class FakeAtom:
             cmd = json.loads(payload)
         except json.JSONDecodeError as exc:
             print(f"[atom] dev{dev.dev_id} bad OTA command: {exc}")
+            return
+        if cmd.get("cmd") == "IRDATA":
+            self._handle_irdata(dev, cmd)
             return
         url = cmd.get("url", "")
         print(f"[atom] dev{dev.dev_id} OTA start <- {url}")
@@ -220,9 +260,81 @@ class FakeAtom:
         time.sleep(1.0)
         dev.ir_ready = True
         dev.protocol = cmd.get("protocol")
+        if dev.protocol != "RAW":
+            # A protocol flash replaces whatever raw bundle was loaded before.
+            dev.model_id, dev.ir_slots = None, []
         self._save_state()
         print(f"[atom] dev{dev.dev_id} OTA OK: {len(blob)} bytes in {elapsed:.2f}s "
               f"({dev.protocol}) -- rebooted, FLAG_IR_READY now set")
+
+    def _handle_irdata(self, dev: FakeDevice, cmd: dict) -> None:
+        """Fetch a learned-code bundle, store it 'in SPIFFS', ack over MQTT."""
+        url = cmd.get("url", "")
+        model_id = cmd.get("model_id")
+        print(f"[atom] dev{dev.dev_id} IRDATA start <- {url}")
+        try:
+            with urllib.request.urlopen(url, timeout=20) as resp:
+                blob = resp.read()
+            bundle = json.loads(blob)
+            slots = list((bundle.get("slots") or {}).keys())
+            if not slots:
+                raise ValueError("empty slots")
+        except Exception as exc:
+            print(f"[atom] dev{dev.dev_id} IRDATA FAILED: {exc}")
+            self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
+                {"type": "irdata_ack", "model_id": model_id, "ok": False}), qos=1)
+            return
+        expected = cmd.get("size")
+        if expected is not None and len(blob) != expected:
+            print(f"[atom] dev{dev.dev_id} IRDATA size mismatch: "
+                  f"got {len(blob)}, announced {expected}")
+            self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
+                {"type": "irdata_ack", "model_id": model_id, "ok": False}), qos=1)
+            return
+        dev.ir_ready = True
+        dev.protocol = "RAW"
+        dev.model_id = model_id
+        dev.ir_slots = slots
+        self._save_state()
+        self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
+            {"type": "irdata_ack", "model_id": model_id, "ok": True,
+             "slots": len(slots), "bytes": len(blob)}), qos=1)
+        print(f"[atom] dev{dev.dev_id} IRDATA OK: {len(slots)} codes, "
+              f"{len(blob)} bytes ({model_id}) -- stored, ack sent")
+
+    def _handle_learn(self, dev: FakeDevice, payload: bytes) -> None:
+        """Pretend an admin pressed the remote at this device's IR receiver."""
+        try:
+            cmd = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            print(f"[atom] dev{dev.dev_id} bad learn command: {exc}")
+            return
+        if cmd.get("cmd") == "LEARN_CANCEL":
+            print(f"[atom] dev{dev.dev_id} learn canceled "
+                  f"(session {cmd.get('session_id')})")
+            return
+        session_id, slot = cmd.get("session_id"), cmd.get("slot")
+        print(f"[atom] dev{dev.dev_id} LEARN {slot} (session {session_id}) "
+              f"-- waiting for the remote...")
+        if self.args.learn_timeout:
+            time.sleep(min(float(cmd.get("timeout_s") or 30), 5.0))
+            self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
+                {"type": "capture", "session_id": session_id, "slot": slot,
+                 "ok": False, "error": "timeout"}), qos=1)
+            print(f"[atom] dev{dev.dev_id} LEARN {slot} timed out (--learn-timeout)")
+            return
+        time.sleep(1.5)
+        # Deterministic pseudo-signal: same store/dev/slot -> same waveform,
+        # so a re-capture is reproducible in demos and tests.
+        rng = random.Random(f"{self.args.store_id}/{dev.dev_id}/{slot}")
+        raw = [3400, 1700]
+        for _ in range(99):
+            raw.append(rng.choice([400, 450, 500]))
+            raw.append(rng.choice([450, 1300]))
+        self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
+            {"type": "capture", "session_id": session_id, "slot": slot,
+             "ok": True, "freq_khz": 38, "len": len(raw), "raw": raw}), qos=1)
+        print(f"[atom] dev{dev.dev_id} LEARN {slot} captured ({len(raw)} entries)")
 
     # -- main loop ---------------------------------------------------------
 
@@ -270,10 +382,15 @@ def main() -> None:
     ap.add_argument("--broker", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=1883)
     ap.add_argument("--devices", type=int, default=2)
+    ap.add_argument("--first-dev", type=int, default=1,
+                    help="first fake dev_id; raise it so fakes never collide "
+                         "with real hardware on the same broker (e.g. 11)")
     ap.add_argument("--state-file", default=str(default_state),
                     help="where flashed-firmware state is remembered between runs")
     ap.add_argument("--fault-rate", type=float, default=0.0,
                     help="per-second chance of a sensor fault, e.g. 0.01")
+    ap.add_argument("--learn-timeout", action="store_true",
+                    help="never 'press the remote': every learn request times out")
     ap.add_argument("--seed", type=int, default=None, help="reproducible readings")
     FakeAtom(ap.parse_args()).run()
 

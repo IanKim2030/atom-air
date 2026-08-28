@@ -206,6 +206,10 @@ class Stack:
             return
 
         protocols = {m["protocol"] for brand in catalog for m in brand["models"]}
+        # The universal raw-replay image must exist even before the first raw
+        # model is registered, or a bare-device IR-data deploy has nothing to
+        # flash first.
+        protocols.add("RAW")
         made = 0
         for proto in sorted(protocols):
             path = firmware / f"atom_ac_{proto.lower()}.bin"
@@ -228,6 +232,7 @@ class Stack:
         cmd = [sys.executable, str(REPO / "tools" / "fake_atom.py"),
                "--store-id", self.args.store_id,
                "--devices", str(self.args.devices),
+               "--first-dev", str(self.args.first_dev),
                "--state-file", str(MOCK_DIR / "fake_atom_state.json")]
         if self.args.fault_rate > 0:
             cmd += ["--fault-rate", str(self.args.fault_rate)]
@@ -311,6 +316,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Run the whole stack without hardware")
     ap.add_argument("--store-id", default="S001")
     ap.add_argument("--devices", type=int, default=2)
+    ap.add_argument("--first-dev", type=int, default=1,
+                    help="first fake dev_id -- raise it (e.g. 11) when a real "
+                         "Atom Lite shares the broker, so ids never collide")
     ap.add_argument("--broker", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=1883)
     ap.add_argument("--fault-rate", type=float, default=0.0)
