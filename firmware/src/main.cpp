@@ -948,8 +948,12 @@ void setup() {
     Serial.println("[boot] SPIFFS mount failed — learned IR replay unavailable");
   // Readiness is one question now: did a learned bundle survive the reboot?
   irReady = SPIFFS.exists(IRDATA_PATH);
-  Serial.printf("[boot] atom_ac firmware, remote=%s ir_ready=%d\n",
-                acModel.isEmpty() ? "(none learned)" : acModel.c_str(), irReady);
+  // The pins are in the banner because a learn that never captures is almost
+  // always a receiver on the wrong pin, and this is the cheapest way to rule
+  // that out over the serial console.
+  Serial.printf("[boot] atom_ac firmware, remote=%s ir_ready=%d tx=G%d rx=G%d\n",
+                acModel.isEmpty() ? "(none learned)" : acModel.c_str(), irReady,
+                IR_TX_PIN, IR_RX_PIN);
 #else
   irReady = false;   // base image cannot transmit IR regardless of NVS
   Serial.println("[boot] atom_base firmware (sensor + OTA only)");

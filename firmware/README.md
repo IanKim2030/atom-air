@@ -130,7 +130,7 @@ which is why an obscure unit works exactly as well as a common one:
 - An AC frame is mapped to a slot key (`off`, `cool_18..30`, `heat_18..30`;
   fan is fixed to whatever the remote sent when learned) and that slot's
   mark/space array is replayed with `sendRaw()`. Unlearned combos are skipped.
-- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G33**, VCC→3V3,
+- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G25**, VCC→3V3,
   GND→GND) on the unit used for capture — transmit-only units need nothing.
   A `LEARN` command arms the receiver (LED purple); the next decoded frame is
   published up as raw timings and the receiver disarms.

@@ -41,11 +41,11 @@
 #ifndef IR_TX_PIN
 #define IR_TX_PIN 12        // built-in IR LED
 #endif
-// Optional IR receiver (VS1838B/TSOP38238: OUT->G33, VCC->3V3, GND->GND) for
+// Optional IR receiver (VS1838B/TSOP38238: OUT->G25, VCC->3V3, GND->GND) for
 // learning raw remote codes. Only devices used for 학습 need one attached;
-// G33 is a free bottom-header pin (Grove 26/32 is taken by the sensor).
+// G25 is a free bottom-header pin (Grove 26/32 is taken by the sensor).
 #ifndef IR_RX_PIN
-#define IR_RX_PIN 33
+#define IR_RX_PIN 25
 #endif
 #ifndef STATUS_LED_PIN
 #define STATUS_LED_PIN 27   // built-in SK6812 RGB LED
