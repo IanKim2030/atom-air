@@ -5,6 +5,7 @@
 //
 //   publishes  atom/{store}/sensor          12-byte SensorPacket, 1 Hz
 //   publishes  atom/{store}/ir/{dev_id}     JSON IR events (capture, IRDATA ack)
+//   publishes  atom/{store}/log/{dev_id}    JSON console mirror (web 디버깅 panel)
 //   subscribes atom/{store}/ac/{dev_id}     8-byte AC control frame -> IR
 //   subscribes atom/{store}/ota/{dev_id}    JSON {"cmd":"OTA"|"IRDATA","url",...}
 //   subscribes atom/{store}/learn/{dev_id}  JSON {"cmd":"LEARN","slot",...}
@@ -72,6 +73,51 @@ static char topicAC[64];
 static char topicOTA[64];
 static char topicLearn[64];
 static char topicIR[64];
+static char topicLog[64];
+
+// -- serial tee: board output mirrored to the cloud ---------------------
+// Every line the firmware prints goes two places: the USB console, as always,
+// and a small ring the loop drains onto atom/{store}/log/{dev}. That is what
+// lets the dashboard's 디버깅 panel show what a developer sees on a monitor,
+// without anyone walking to the unit with a cable. The ring is what makes the
+// boot banner survive -- those lines are printed long before MQTT is up.
+static const uint8_t LOG_RING = 64;
+static const uint8_t LOG_LINE_MAX = 160;
+
+class SerialTee : public Print {
+ public:
+  size_t write(uint8_t c) override { Serial.write(c); capture(c); return 1; }
+  size_t write(const uint8_t *buf, size_t n) override {
+    Serial.write(buf, n);
+    for (size_t i = 0; i < n; i++) capture(buf[i]);
+    return n;
+  }
+  bool pending() const { return head != tail; }
+  String pop() {
+    if (head == tail) return String();
+    String out = ring[tail];
+    tail = (tail + 1) % LOG_RING;
+    return out;
+  }
+
+ private:
+  void capture(uint8_t c) {
+    if (c == '\r') return;
+    if (c == '\n') { commit(); return; }
+    if (partial.length() < LOG_LINE_MAX) partial += (char)c;
+  }
+  void commit() {
+    if (partial.isEmpty()) return;
+    ring[head] = partial;
+    partial = "";
+    head = (head + 1) % LOG_RING;
+    if (head == tail) tail = (tail + 1) % LOG_RING;   // oldest line falls off
+  }
+  String ring[LOG_RING];
+  String partial;
+  uint8_t head = 0, tail = 0;
+};
+static SerialTee LOG;
 
 static uint16_t seq = 0;
 static bool acOn = false;
@@ -111,6 +157,12 @@ static long irdataSize = -1;
 // Learn session, armed by a LEARN command.
 static bool learnActive = false;
 static uint32_t learnDeadline = 0;
+// IR monitor: the receiver armed with nowhere to store what it hears. Every
+// frame is printed and thrown away, which is what you want when the question is
+// "does this remote reach the unit, and what does it actually send?"
+static bool monitorActive = false;
+static uint32_t monitorDeadline = 0;
+static uint16_t monitorFrames = 0;
 static String learnSessionId, learnSlot;
 
 static const char IRDATA_PATH[] = "/irdata.json";
@@ -281,7 +333,7 @@ static bool haveApplied = false;
 static bool sendSlot(const char *slot) {
   File f = SPIFFS.open(IRDATA_PATH, FILE_READ);
   if (!f) {
-    Serial.println("[ir] raw: no /irdata.json in SPIFFS — command ignored");
+    LOG.println("[ir] raw: no /irdata.json in SPIFFS — command ignored");
     return false;
   }
   JsonDocument filter;
@@ -292,12 +344,12 @@ static bool sendSlot(const char *slot) {
       deserializeJson(doc, f, DeserializationOption::Filter(filter));
   f.close();
   if (err != DeserializationError::Ok) {
-    Serial.printf("[ir] raw: bundle parse failed: %s\n", err.c_str());
+    LOG.printf("[ir] raw: bundle parse failed: %s\n", err.c_str());
     return false;
   }
   JsonArray arr = doc["slots"][slot];
   if (arr.isNull() || arr.size() < 20 || arr.size() > 1024) {
-    Serial.printf("[ir] raw: %s not learned — skipped\n", slot);
+    LOG.printf("[ir] raw: %s not learned — skipped\n", slot);
     return false;
   }
   static uint16_t rawBuf[1024];
@@ -305,7 +357,7 @@ static bool sendSlot(const char *slot) {
   for (JsonVariant v : arr) rawBuf[n++] = v.as<uint16_t>();
   uint16_t freq = doc["freq_khz"] | 38;
   irsendRaw.sendRaw(rawBuf, n, freq);
-  Serial.printf("[ir] raw: sent %s (%u entries @ %ukHz)\n", slot, n, freq);
+  LOG.printf("[ir] raw: sent %s (%u entries @ %ukHz)\n", slot, n, freq);
   delay(250);   // remotes need a gap between frames or the AC drops the second
   return true;
 }
@@ -363,6 +415,26 @@ static bool sendRawSlot(uint8_t power, uint8_t mode, uint8_t temp, uint8_t fan) 
   return sent;
 }
 
+// Prints a captured frame as the numbers themselves, not just a count. Twelve
+// per line because a log line is capped at 160 chars and because mark/space
+// pairs read best in even columns -- header burst first, then the bit stream.
+static void dumpRawTimings(const char *tag, const uint16_t *raw, uint16_t len) {
+  uint32_t total = 0;
+  for (uint16_t i = 0; i < len; i++) total += raw[i];
+  LOG.printf("[%s] %u timings, %lu us total:\n", tag, len, (unsigned long)total);
+  char line[160];
+  size_t at = 0;
+  for (uint16_t i = 0; i < len; i++) {
+    at += snprintf(line + at, sizeof(line) - at, "%u%s", raw[i],
+                   (i + 1 == len) ? "" : ",");
+    if ((i + 1) % 12 == 0 || i + 1 == len) {
+      LOG.printf("[%s] %4u: %s\n", tag, (unsigned)(i - (i % 12)), line);
+      at = 0;
+      line[0] = '\0';
+    }
+  }
+}
+
 // ── IR learn (리모컨 캡처) ──────────────────────────────────────────────
 static bool publishIrJson(JsonDocument &doc) {
   String out;
@@ -389,21 +461,51 @@ static void stopLearn() {
   led(CRGB::Green);
 }
 
+static void stopMonitor() {
+  irrecv.disableIRIn();
+  monitorActive = false;
+  FastLED.setBrightness(24);
+  led(CRGB::Green);
+  LOG.printf("[monitor] stopped -- %u frame(s) seen\n", monitorFrames);
+}
+
 static void handleLearnCommand(const uint8_t *payload, size_t len) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, len) != DeserializationError::Ok) {
-    Serial.println("[learn] bad JSON, ignoring");
+    LOG.println("[learn] bad JSON, ignoring");
     return;
   }
   const char *cmd = doc["cmd"] | "";
   if (strcmp(cmd, "LEARN_CANCEL") == 0) {
     if (learnActive) {
-      Serial.println("[learn] canceled");
+      LOG.println("[learn] canceled");
       stopLearn();
     }
     return;
   }
+  if (strcmp(cmd, "MONITOR") == 0) {
+    if (learnActive) {
+      LOG.println("[monitor] a learn session is running -- try again after it ends");
+      return;
+    }
+    if (monitorActive) stopMonitor();   // restart the window rather than stack
+    long timeoutS = doc["timeout_s"] | 20L;
+    monitorDeadline = millis() + (uint32_t)constrain(timeoutS, 5L, 120L) * 1000;
+    monitorFrames = 0;
+    irrecv.enableIRIn();
+    monitorActive = true;
+    FastLED.setBrightness(60);
+    led(CRGB::Cyan);   // distinct from learn's purple: nothing is being stored
+    LOG.printf("[monitor] IR 수신 대기 %lds -- 리모컨을 장비에 향하게 하고 누르세요\n",
+               timeoutS);
+    return;
+  }
+  if (strcmp(cmd, "MONITOR_CANCEL") == 0) {
+    if (monitorActive) stopMonitor();
+    return;
+  }
   if (strcmp(cmd, "LEARN") != 0) return;
+  if (monitorActive) stopMonitor();   // a real capture outranks a look
   learnSessionId = (const char *)(doc["session_id"] | "");
   learnSlot = (const char *)(doc["slot"] | "");
   long timeoutS = doc["timeout_s"] | 30L;
@@ -412,15 +514,42 @@ static void handleLearnCommand(const uint8_t *payload, size_t len) {
   learnActive = true;
   FastLED.setBrightness(60);
   led(CRGB::Purple);   // "point the remote at me"
-  Serial.printf("[learn] armed for slot %s (session %s, %lds)\n",
+  LOG.printf("[learn] armed for slot %s (session %s, %lds)\n",
                 learnSlot.c_str(), learnSessionId.c_str(), timeoutS);
+}
+
+// Runs from loop() while the monitor window is open. Everything it hears is
+// printed and dropped -- the console is the only destination.
+static void pollMonitor() {
+  if (!monitorActive) return;
+  if ((int32_t)(millis() - monitorDeadline) >= 0) {
+    if (monitorFrames == 0)
+      LOG.println("[monitor] 아무것도 수신되지 않았습니다 -- 수신기 연결(G25), "
+                  "리모컨 방향, 건전지를 확인하세요");
+    stopMonitor();
+    return;
+  }
+  decode_results results;
+  if (!irrecv.decode(&results)) return;
+  uint16_t rawLen = getCorrectedRawLength(&results);
+  if (rawLen < 12) {   // stray flicker from daylight or a fluorescent tube
+    irrecv.resume();
+    return;
+  }
+  monitorFrames++;
+  uint16_t *raw = resultToRawArray(&results);
+  LOG.printf("[monitor] frame #%u  protocol=%s\n", monitorFrames,
+             typeToString(results.decode_type).c_str());
+  dumpRawTimings("monitor", raw, rawLen);
+  delete[] raw;
+  irrecv.resume();
 }
 
 // Runs from loop() while a learn session is active.
 static void pollLearn() {
   if (!learnActive) return;
   if ((int32_t)(millis() - learnDeadline) >= 0) {
-    Serial.println("[learn] timeout — no signal seen");
+    LOG.println("[learn] timeout — no signal seen");
     publishCaptureError("timeout");
     stopLearn();
     return;
@@ -442,12 +571,11 @@ static void pollLearn() {
   doc["len"] = rawLen;
   JsonArray arr = doc["raw"].to<JsonArray>();
   for (uint16_t i = 0; i < rawLen; i++) arr.add(raw[i]);
-  delete[] raw;
   if (!publishIrJson(doc)) {
-    Serial.printf("[learn] frame too long to publish (%u entries)\n", rawLen);
+    LOG.printf("[learn] frame too long to publish (%u entries)\n", rawLen);
     publishCaptureError("too_long");
   } else {
-    Serial.printf("[learn] captured %s: %u entries — sent\n",
+    LOG.printf("[learn] captured %s: %u entries — sent\n",
                   learnSlot.c_str(), rawLen);
   }
   stopLearn();
@@ -457,7 +585,7 @@ static void pollLearn() {
 static void handleAcFrame(const uint8_t *d, size_t len) {
   if (len != AC_SIZE || d[0] != AC_HEADER || d[7] != AC_TAIL ||
       d[6] != xorChecksum(d, 6)) {
-    Serial.println("[ac] rejected malformed frame");
+    LOG.println("[ac] rejected malformed frame");
     return;
   }
   if (d[1] != DEVICE_ID) return;   // topic already targets us, but be strict
@@ -491,14 +619,14 @@ static void handleAcFrame(const uint8_t *d, size_t len) {
   }
 #endif
   (void)mode; (void)temp; (void)fan;
-  Serial.println("[ac] no learned remote yet — command ignored");
+  LOG.println("[ac] no learned remote yet — command ignored");
 }
 
 // ── OTA / IRDATA ────────────────────────────────────────────────────────
 static void handleOtaCommand(const uint8_t *payload, size_t len) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, len) != DeserializationError::Ok) {
-    Serial.println("[ota] bad JSON, ignoring");
+    LOG.println("[ota] bad JSON, ignoring");
     return;
   }
   const char *cmd = doc["cmd"] | "OTA";
@@ -509,12 +637,12 @@ static void handleOtaCommand(const uint8_t *payload, size_t len) {
     irdataModel = (const char *)(doc["model"] | "");
     irdataSize = doc["size"] | -1L;
     if (irdataUrl.isEmpty()) {
-      Serial.println("[irdata] command without url, ignoring");
+      LOG.println("[irdata] command without url, ignoring");
       return;
     }
     irdataPending = true;   // picked up by loop()
 #else
-    Serial.println("[irdata] base image cannot store IR data — run SOTA first");
+    LOG.println("[irdata] base image cannot store IR data — run SOTA first");
 #endif
     return;
   }
@@ -522,7 +650,7 @@ static void handleOtaCommand(const uint8_t *payload, size_t len) {
   otaModel = doc["model"] | "";
   otaSize = doc["size"] | -1L;
   if (otaUrl.isEmpty()) {
-    Serial.println("[ota] command without url, ignoring");
+    LOG.println("[ota] command without url, ignoring");
     return;
   }
   otaPending = true;   // picked up by loop()
@@ -543,7 +671,7 @@ static void ackIrdata(bool ok, int slots, size_t bytes) {
 
 static void performIrdata() {
   irdataPending = false;
-  Serial.printf("[irdata] start <- %s (model_id=%s)\n", irdataUrl.c_str(),
+  LOG.printf("[irdata] start <- %s (model_id=%s)\n", irdataUrl.c_str(),
                 irdataModelId.c_str());
   led(CRGB::Blue);
 
@@ -552,7 +680,7 @@ static void performIrdata() {
   http.setTimeout(20000);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    Serial.printf("[irdata] fetch failed: HTTP %d\n", code);
+    LOG.printf("[irdata] fetch failed: HTTP %d\n", code);
     http.end();
     ackIrdata(false, 0, 0);
     led(CRGB::Green);
@@ -562,7 +690,7 @@ static void performIrdata() {
   // in RAM, and it never needs to — sendRawSlot() filter-reads one slot.
   File f = SPIFFS.open(IRDATA_PATH, FILE_WRITE);
   if (!f) {
-    Serial.println("[irdata] cannot open SPIFFS file for writing");
+    LOG.println("[irdata] cannot open SPIFFS file for writing");
     http.end();
     ackIrdata(false, 0, 0);
     led(CRGB::Green);
@@ -590,7 +718,7 @@ static void performIrdata() {
   http.end();
 
   if (irdataSize > 0 && written != (size_t)irdataSize) {
-    Serial.printf("[irdata] size mismatch: got %u, announced %ld\n",
+    LOG.printf("[irdata] size mismatch: got %u, announced %ld\n",
                   (unsigned)written, irdataSize);
     SPIFFS.remove(IRDATA_PATH);
     ackIrdata(false, 0, 0);
@@ -615,7 +743,7 @@ static void performIrdata() {
     check.close();
     if (err != DeserializationError::Ok || (doc["v"] | 0) != 1 ||
         irdataModelId != (const char *)(doc["model_id"] | "")) {
-      Serial.println("[irdata] bundle failed validation — keeping old config");
+      LOG.println("[irdata] bundle failed validation — keeping old config");
       SPIFFS.remove(IRDATA_PATH);
       ackIrdata(false, 0, 0);
       led(CRGB::Green);
@@ -641,7 +769,7 @@ static void performIrdata() {
   irReady = true;
 
   ackIrdata(true, slots, written);
-  Serial.printf("[irdata] OK: %u bytes, %d combos (%s) — raw replay armed\n",
+  LOG.printf("[irdata] OK: %u bytes, %d combos (%s) — raw replay armed\n",
                 (unsigned)written, slots, irdataModelId.c_str());
   led(CRGB::Green);
 }
@@ -649,7 +777,7 @@ static void performIrdata() {
 
 static void performOta() {
   otaPending = false;
-  Serial.printf("[ota] start <- %s (%s)\n", otaUrl.c_str(),
+  LOG.printf("[ota] start <- %s (%s)\n", otaUrl.c_str(),
                 otaModel.isEmpty() ? "IR image" : otaModel.c_str());
   led(CRGB::Blue);
 
@@ -664,30 +792,30 @@ static void performOta() {
   http.setTimeout(20000);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    Serial.printf("[ota] fetch failed: HTTP %d\n", code);
+    LOG.printf("[ota] fetch failed: HTTP %d\n", code);
     http.end();
     return;
   }
   int contentLen = http.getSize();
   if (otaSize > 0 && contentLen > 0 && contentLen != otaSize) {
-    Serial.printf("[ota] size mismatch: got %d, announced %ld\n",
+    LOG.printf("[ota] size mismatch: got %d, announced %ld\n",
                   contentLen, otaSize);
     http.end();
     return;
   }
   if (!Update.begin(contentLen > 0 ? (size_t)contentLen : UPDATE_SIZE_UNKNOWN)) {
-    Serial.printf("[ota] no space: %s\n", Update.errorString());
+    LOG.printf("[ota] no space: %s\n", Update.errorString());
     http.end();
     return;
   }
   size_t written = Update.writeStream(http.getStream());
   http.end();
   if (!Update.end(true) || !Update.isFinished()) {
-    Serial.printf("[ota] flash failed after %u bytes: %s\n",
+    LOG.printf("[ota] flash failed after %u bytes: %s\n",
                   (unsigned)written, Update.errorString());
     return;
   }
-  Serial.printf("[ota] OK, %u bytes — rebooting into new firmware\n",
+  LOG.printf("[ota] OK, %u bytes — rebooting into new firmware\n",
                 (unsigned)written);
   delay(300);
   ESP.restart();
@@ -744,21 +872,21 @@ static const char *authName(wifi_auth_mode_t mode) {
 // radio, so a 5 GHz-only AP is invisible here however strong it looks on a
 // phone -- that difference is exactly what this command is for.
 static void handleScan() {
-  Serial.println("[scan] scanning 2.4GHz...");
+  LOG.println("[scan] scanning 2.4GHz...");
   WiFi.mode(WIFI_STA);
   int found = WiFi.scanNetworks();
   if (found <= 0) {
-    Serial.println("[scan] no networks found");
+    LOG.println("[scan] no networks found");
   } else {
-    Serial.printf("[scan] %d networks\n", found);
+    LOG.printf("[scan] %d networks\n", found);
     for (int i = 0; i < found; i++) {
-      Serial.printf("[scan]  %-24s ch%-3d %4d dBm  %s\n", WiFi.SSID(i).c_str(),
+      LOG.printf("[scan]  %-24s ch%-3d %4d dBm  %s\n", WiFi.SSID(i).c_str(),
                     WiFi.channel(i), WiFi.RSSI(i),
                     authName(WiFi.encryptionType(i)));
     }
   }
   WiFi.scanDelete();
-  Serial.println("[scan] done -- this radio is 2.4GHz only; a 5GHz-only AP "
+  LOG.println("[scan] done -- this radio is 2.4GHz only; a 5GHz-only AP "
                  "never appears here");
   // Scanning drops a pending association, so re-arm it or ensureWifi's loop
   // would spin forever waiting on a request that no longer exists.
@@ -773,10 +901,10 @@ static void handleScan() {
 // so a remote press proves the whole path, not just the DC level.
 static void handleIrProbe() {
   if (learnActive) {
-    Serial.println("[ir] a learn session is running -- try again once it ends");
+    LOG.println("[ir] a learn session is running -- try again once it ends");
     return;
   }
-  Serial.printf("[ir] tx=G%d rx=G%d\n", IR_TX_PIN, IR_RX_PIN);
+  LOG.printf("[ir] tx=G%d rx=G%d\n", IR_TX_PIN, IR_RX_PIN);
 
   // No disableIRIn() here: the receiver is only armed during a learn, and
   // calling it without a prior enableIRIn() dereferences a null timer handle
@@ -789,15 +917,15 @@ static void handleIrProbe() {
     delayMicroseconds(200);
   }
   if (highs >= 195)
-    Serial.println("[ir] receiver detected: idle HIGH against a pulldown");
+    LOG.println("[ir] receiver detected: idle HIGH against a pulldown");
   else if (highs <= 5)
-    Serial.printf("[ir] nothing on G%d: reads LOW, so the pin is floating "
+    LOG.printf("[ir] nothing on G%d: reads LOW, so the pin is floating "
                   "(check OUT->G%d, VCC->3V3, GND)\n", IR_RX_PIN, IR_RX_PIN);
   else
-    Serial.printf("[ir] G%d is unsteady (%d/200 high) -- either IR is hitting "
+    LOG.printf("[ir] G%d is unsteady (%d/200 high) -- either IR is hitting "
                   "it right now, or the wiring is loose\n", IR_RX_PIN, highs);
 
-  Serial.println("[ir] listening 5s -- point a remote at the unit and press a button");
+  LOG.println("[ir] listening 5s -- point a remote at the unit and press a button");
   irrecv.enableIRIn();
   decode_results results;
   uint32_t until = millis() + 5000;
@@ -805,7 +933,7 @@ static void handleIrProbe() {
   while ((int32_t)(millis() - until) < 0) {
     if (irrecv.decode(&results)) {
       frames++;
-      Serial.printf("[ir] captured a frame: %u timings\n",
+      LOG.printf("[ir] captured a frame: %u timings\n",
                     (unsigned)results.rawlen);
       irrecv.resume();
     }
@@ -813,10 +941,10 @@ static void handleIrProbe() {
   }
   irrecv.disableIRIn();   // safe: this call site enabled it a moment ago
   if (frames == 0)
-    Serial.println("[ir] nothing captured -- no receiver, wrong pin, or no "
+    LOG.println("[ir] nothing captured -- no receiver, wrong pin, or no "
                    "button was pressed");
   else
-    Serial.printf("[ir] %d frame(s) captured -- receive path works\n", frames);
+    LOG.printf("[ir] %d frame(s) captured -- receive path works\n", frames);
 }
 #endif
 
@@ -825,7 +953,7 @@ static void handleSerialLine(String line) {
   if (line.isEmpty()) return;
 
   if (line == "wifi?") {
-    Serial.printf("[wifi] ssid=%s source=%s status=%s ip=%s\n",
+    LOG.printf("[wifi] ssid=%s source=%s status=%s ip=%s\n",
                   wifiSsid.c_str(), wifiFromNvs ? "NVS" : "config.h",
                   WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
                   WiFi.localIP().toString().c_str());
@@ -836,7 +964,7 @@ static void handleSerialLine(String line) {
     prefs.remove("wifi_ssid");
     prefs.remove("wifi_pass");
     prefs.end();
-    Serial.println("[wifi] NVS credentials cleared -- rebooting to config.h defaults");
+    LOG.println("[wifi] NVS credentials cleared -- rebooting to config.h defaults");
     delay(200);
     ESP.restart();
   }
@@ -845,20 +973,20 @@ static void handleSerialLine(String line) {
     String ssid = takeToken(rest);
     String pass = takeToken(rest);
     if (ssid.isEmpty() || pass.isEmpty()) {
-      Serial.println("[wifi] usage: wifi <ssid> <password>   (\"quotes\" for spaces)");
+      LOG.println("[wifi] usage: wifi <ssid> <password>   (\"quotes\" for spaces)");
       return;
     }
     prefs.begin("atomair", false);
     prefs.putString("wifi_ssid", ssid);
     prefs.putString("wifi_pass", pass);
     prefs.end();
-    Serial.printf("[wifi] saved ssid=%s to NVS -- rebooting\n", ssid.c_str());
+    LOG.printf("[wifi] saved ssid=%s to NVS -- rebooting\n", ssid.c_str());
     delay(200);
     ESP.restart();
   }
 
   if (line == "mqtt?") {
-    Serial.printf("[mqtt] host=%s port=%u source=%s status=%s\n",
+    LOG.printf("[mqtt] host=%s port=%u source=%s status=%s\n",
                   mqttHost.isEmpty() ? "(unset)" : mqttHost.c_str(), mqttPort,
                   mqttFromNvs ? "NVS" : "config.h",
                   mqtt.connected() ? "connected" : "disconnected");
@@ -869,7 +997,7 @@ static void handleSerialLine(String line) {
     prefs.remove("mqtt_host");
     prefs.remove("mqtt_port");
     prefs.end();
-    Serial.println("[mqtt] NVS address cleared -- rebooting to config.h defaults");
+    LOG.println("[mqtt] NVS address cleared -- rebooting to config.h defaults");
     delay(200);
     ESP.restart();
   }
@@ -881,20 +1009,20 @@ static void handleSerialLine(String line) {
     if (!portTok.isEmpty()) {
       long parsed = portTok.toInt();
       if (parsed < 1 || parsed > 65535) {
-        Serial.printf("[mqtt] bad port: %s\n", portTok.c_str());
+        LOG.printf("[mqtt] bad port: %s\n", portTok.c_str());
         return;
       }
       port = (uint16_t)parsed;
     }
     if (host.isEmpty()) {
-      Serial.println("[mqtt] usage: mqtt <host> [port]   (host = store PC's LAN IP)");
+      LOG.println("[mqtt] usage: mqtt <host> [port]   (host = store PC's LAN IP)");
       return;
     }
     prefs.begin("atomair", false);
     prefs.putString("mqtt_host", host);
     prefs.putUShort("mqtt_port", port);
     prefs.end();
-    Serial.printf("[mqtt] saved %s:%u to NVS -- rebooting\n", host.c_str(), port);
+    LOG.printf("[mqtt] saved %s:%u to NVS -- rebooting\n", host.c_str(), port);
     delay(200);
     ESP.restart();
   }
@@ -911,7 +1039,7 @@ static void handleSerialLine(String line) {
   }
 #endif
 
-  Serial.printf("[serial] unknown command: %s\n", line.c_str());
+  LOG.printf("[serial] unknown command: %s\n", line.c_str());
 }
 
 static void pollSerial() {
@@ -951,7 +1079,7 @@ static bool ensureMqtt() {
     uint32_t now = millis();
     if (lastPrompt == 0 || now - lastPrompt >= 5000) {
       lastPrompt = now;
-      Serial.println("[mqtt] gateway address not set -- run: mqtt <host> [port]");
+      LOG.println("[mqtt] gateway address not set -- run: mqtt <host> [port]");
     }
     return false;
   }
@@ -964,7 +1092,7 @@ static bool ensureMqtt() {
 #ifdef HAS_IR
   mqtt.subscribe(topicLearn, 1);
 #endif
-  Serial.printf("[mqtt] connected to %s:%u (%s) as %s\n", mqttHost.c_str(),
+  LOG.printf("[mqtt] connected to %s:%u (%s) as %s\n", mqttHost.c_str(),
                 mqttPort, mqttFromNvs ? "NVS" : "config.h", clientId);
   return true;
 }
@@ -977,14 +1105,14 @@ static void ensureWifi() {
     // out of here is a `wifi <ssid> <password>` over serial, which saves to
     // NVS and reboots — so park, prompt, and keep the console responsive.
     for (;;) {
-      Serial.println("[wifi] not provisioned -- run: wifi <ssid> <password>");
+      LOG.println("[wifi] not provisioned -- run: wifi <ssid> <password>");
       for (int i = 0; i < 50; i++) {   // ~5 s between prompts
         pollSerial();
         delay(100);
       }
     }
   }
-  Serial.printf("[wifi] connecting to %s (%s)", wifiSsid.c_str(),
+  LOG.printf("[wifi] connecting to %s (%s)", wifiSsid.c_str(),
                 wifiFromNvs ? "NVS" : "config.h");
   WiFi.mode(WIFI_STA);
   WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
@@ -993,9 +1121,9 @@ static void ensureWifi() {
     // must stay responsive to accept a corrected `wifi ...` command.
     pollSerial();
     delay(500);
-    Serial.print(".");
+    LOG.print(".");
   }
-  Serial.printf("\n[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
+  LOG.printf("\n[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
 }
 
 // ── lifecycle ───────────────────────────────────────────────────────────
@@ -1010,9 +1138,10 @@ void setup() {
   snprintf(topicOTA, sizeof(topicOTA), "atom/%s/ota/%d", STORE_ID, DEVICE_ID);
   snprintf(topicLearn, sizeof(topicLearn), "atom/%s/learn/%d", STORE_ID, DEVICE_ID);
   snprintf(topicIR, sizeof(topicIR), "atom/%s/ir/%d", STORE_ID, DEVICE_ID);
+  snprintf(topicLog, sizeof(topicLog), "atom/%s/log/%d", STORE_ID, DEVICE_ID);
 
   detectSensor();
-  Serial.printf("[boot] sensor: %s%s\n", sensorName(),
+  LOG.printf("[boot] sensor: %s%s\n", sensorName(),
                 sensorKind == SENSOR_NONE
                     ? " (packets will carry FLAG_SENSOR_FAULT; "
                       "plug a sensor into the Grove port and reset)"
@@ -1032,9 +1161,9 @@ void setup() {
     wifiPass = WIFI_PASS;
   }
   if (wifiSsid.isEmpty())
-    Serial.println("[boot] wifi: not provisioned -- run: wifi <ssid> <password>");
+    LOG.println("[boot] wifi: not provisioned -- run: wifi <ssid> <password>");
   else
-    Serial.printf("[boot] wifi ssid=%s (%s)\n", wifiSsid.c_str(),
+    LOG.printf("[boot] wifi ssid=%s (%s)\n", wifiSsid.c_str(),
                   wifiFromNvs ? "NVS" : "config.h default");
 
   mqttFromNvs = !mqttHost.isEmpty();
@@ -1043,28 +1172,28 @@ void setup() {
     mqttPort = MQTT_PORT;
   }
   if (mqttHost.isEmpty())
-    Serial.println("[boot] mqtt: gateway address not set -- run: mqtt <host> [port]");
+    LOG.println("[boot] mqtt: gateway address not set -- run: mqtt <host> [port]");
   else
-    Serial.printf("[boot] mqtt %s:%u (%s)\n", mqttHost.c_str(), mqttPort,
+    LOG.printf("[boot] mqtt %s:%u (%s)\n", mqttHost.c_str(), mqttPort,
                   mqttFromNvs ? "NVS" : "config.h default");
 
 #ifdef HAS_IR
   irsendRaw.begin();
   if (!SPIFFS.begin(true))   // format on first mount so IRDATA can land later
-    Serial.println("[boot] SPIFFS mount failed — learned IR replay unavailable");
+    LOG.println("[boot] SPIFFS mount failed — learned IR replay unavailable");
   // Readiness is one question now: did a learned bundle survive the reboot?
   irReady = SPIFFS.exists(IRDATA_PATH);
   // The pins are in the banner because a learn that never captures is almost
   // always a receiver on the wrong pin, and this is the cheapest way to rule
   // that out over the serial console.
-  Serial.printf("[boot] atom_ac firmware, remote=%s ir_ready=%d tx=G%d rx=G%d\n",
+  LOG.printf("[boot] atom_ac firmware, remote=%s ir_ready=%d tx=G%d rx=G%d\n",
                 acModel.isEmpty() ? "(none learned)" : acModel.c_str(), irReady,
                 IR_TX_PIN, IR_RX_PIN);
 #else
   irReady = false;   // base image cannot transmit IR regardless of NVS
-  Serial.println("[boot] atom_base firmware (sensor + OTA only)");
+  LOG.println("[boot] atom_base firmware (sensor + OTA only)");
 #endif
-  Serial.printf("[boot] store=%s dev=%d -> %s\n", STORE_ID, DEVICE_ID,
+  LOG.printf("[boot] store=%s dev=%d -> %s\n", STORE_ID, DEVICE_ID,
                 topicSensor);
 
   // Safe to hand over the String's buffer: mqttHost is final by now, and a
@@ -1078,6 +1207,36 @@ void setup() {
 #endif
 }
 
+// Ships buffered console lines to the gateway. Batched and rate-limited on
+// purpose: a burst (boot, an OTA, an `ir?` probe) becomes one message instead
+// of twenty, and the 600-byte budget keeps a batch inside the base build's
+// 1 KB MQTT buffer.
+static void flushLog() {
+  static uint32_t lastFlush = 0;
+  static bool inFlush = false;   // a failed publish logs, which would recurse
+  if (inFlush || !LOG.pending()) return;
+  uint32_t now = millis();
+  if (now - lastFlush < 400) return;
+  lastFlush = now;
+  inFlush = true;
+
+  JsonDocument doc;
+  doc["type"] = "log";
+  doc["dev_id"] = DEVICE_ID;
+  doc["uptime_ms"] = now;
+  JsonArray lines = doc["lines"].to<JsonArray>();
+  size_t budget = 0;
+  while (LOG.pending() && budget < 600) {
+    String line = LOG.pop();
+    budget += line.length() + 8;
+    lines.add(line);
+  }
+  String out;
+  serializeJson(doc, out);
+  mqtt.publish(topicLog, (const uint8_t *)out.c_str(), out.length(), false);
+  inFlush = false;
+}
+
 void loop() {
   pollSerial();
   ensureWifi();
@@ -1087,11 +1246,13 @@ void loop() {
   }
   led(CRGB::Green);
   mqtt.loop();
+  flushLog();
 
   if (otaPending) performOta();   // may not return (reboots on success)
 #ifdef HAS_IR
   if (irdataPending) performIrdata();
   pollLearn();
+  pollMonitor();
 #endif
 
   static uint32_t lastPublish = 0;

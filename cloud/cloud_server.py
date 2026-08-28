@@ -26,6 +26,7 @@ import secrets
 import sqlite3
 import sys
 import time
+from collections import deque
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -1292,6 +1293,9 @@ DEVICE_STALE_SECONDS = 15
 # How long a device must produce nothing at all before its card may be retired.
 # Minute stats arrive a minute at a time, so this has to clear two of them.
 DEVICE_QUIET_SECONDS = 180
+# How much board output one card's 디버깅 panel remembers. Enough to cover a
+# boot banner plus an OTA, small enough that ten devices cost nothing.
+DEVICE_LOG_LINES = 300
 # last_seen is refreshed at most this often per device: at 12 devices x 1Hz a
 # per-packet write would be a dozen writes a second for no benefit.
 LAST_SEEN_WRITE_INTERVAL = 60.0
@@ -1313,6 +1317,16 @@ class StoreHub:
     sota_target: dict | None = None   # what the in-flight deploy is flashing
     learn: dict | None = None         # in-flight IR learn session, if any
     gateway_info: dict = field(default_factory=dict)
+    # dev_id -> the last DEVICE_LOG_LINES console lines the unit printed. In
+    # memory only, and deliberately so: this is what a technician would read off
+    # a USB monitor, not an audit record, and it should die with the process.
+    logs: dict[int, deque] = field(default_factory=dict)
+
+    def log_for(self, dev_id: int) -> deque:
+        buf = self.logs.get(dev_id)
+        if buf is None:
+            buf = self.logs[dev_id] = deque(maxlen=DEVICE_LOG_LINES)
+        return buf
 
     def ac_state_for(self, dev_id: int) -> dict:
         state = self.ac_states.get(dev_id)
@@ -1828,6 +1842,63 @@ async def update_device(store_id: str, dev_id: int, patch: DevicePatch,
             changed, "디바이스 정보 변경: " + ", ".join(changed))
     await manager.broadcast(hub, {"type": "device_meta", "device": row})
     return {"device": row}
+
+
+@app.get("/api/v1/stores/{store_id}/devices/{dev_id}/log")
+async def device_log(store_id: str, dev_id: int, request: Request) -> dict:
+    """The board's recent console output. HQ admin only.
+
+    The backlog the 디버깅 panel opens with; everything after that arrives on the
+    store WebSocket as `device_log`. Admin-only for the same reason the delete
+    button is: these lines carry the unit's SSID, its gateway address and its
+    OTA URLs, which is diagnostic detail for HQ and noise for shop staff.
+    """
+    require_admin(request)
+    hub = manager.get(store_id)
+    return {"dev_id": dev_id, "lines": list(hub.logs.get(dev_id) or []),
+            "capacity": DEVICE_LOG_LINES}
+
+
+class IrMonitorRequest(BaseModel):
+    timeout_s: int = Field(20, ge=5, le=120)
+    cancel: bool = False
+
+
+@app.post("/api/v1/stores/{store_id}/devices/{dev_id}/ir-monitor")
+async def start_ir_monitor(store_id: str, dev_id: int, req: IrMonitorRequest,
+                           request: Request) -> dict:
+    """Arm the device's IR receiver and print what it hears. HQ admin only.
+
+    Not a learn session: nothing is stored, and no slot is claimed. It answers
+    the question that comes before learning -- is the remote reaching the unit,
+    and what does the frame actually look like -- with the timings themselves
+    landing in the device console the 디버깅 popup is already showing.
+    """
+    require_admin(request)
+    hub = manager.get(store_id)
+    if learn_in_progress(hub):
+        raise HTTPException(status_code=409,
+                            detail="IR 학습이 진행 중입니다. 완료 후 사용하세요.")
+    sent = await manager.to_gateway(hub, {
+        "cmd": "IR_MONITOR", "store_id": store_id, "target_id": dev_id,
+        "timeout_s": req.timeout_s, "cancel": req.cancel})
+    if not sent:
+        raise HTTPException(status_code=409, detail="게이트웨이가 오프라인입니다.")
+    return {"ok": True, "dev_id": dev_id, "timeout_s": req.timeout_s,
+            "cancel": req.cancel}
+
+
+@app.delete("/api/v1/stores/{store_id}/devices/{dev_id}/log")
+async def clear_device_log(store_id: str, dev_id: int, request: Request) -> dict:
+    """Drop the buffered console for one device. HQ admin only.
+
+    Not an erasure of anything of record -- the ring is diagnostic scratch. It
+    exists so an operator can wipe the noise, run one operation, and read only
+    what that operation printed.
+    """
+    require_admin(request)
+    manager.get(store_id).logs.pop(dev_id, None)
+    return {"ok": True, "dev_id": dev_id}
 
 
 @app.delete("/api/v1/stores/{store_id}/devices/{dev_id}")
@@ -2736,6 +2807,19 @@ async def handle_gateway_json(hub: StoreHub, msg: dict) -> None:
                     f"장비 업그레이드 완료: {target.get('brand') or ''} "
                     f"{target.get('model') or ''}".strip())
                 await manager.broadcast(hub, {"type": "device_meta", "device": row})
+
+    elif kind == "device_log":
+        dev_id = msg.get("dev_id")
+        lines = msg.get("lines") or []
+        if not isinstance(dev_id, int) or not isinstance(lines, list):
+            return
+        stamped = [{"ts": int(time.time() * 1000), "text": str(t)[:200]}
+                   for t in lines[:50]]
+        hub.log_for(dev_id).extend(stamped)
+        # Only viewers with the panel open care, but a broadcast is cheaper than
+        # tracking who does; the browser drops lines for cards it is not showing.
+        await manager.broadcast(hub, {"type": "device_log", "dev_id": dev_id,
+                                      "lines": stamped})
 
     elif kind == "ir_capture":
         await handle_ir_capture(hub, msg)

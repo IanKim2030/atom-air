@@ -27,16 +27,18 @@ type MQTTBridge struct {
 	topicOTA    string
 	topicLearn  string
 	topicIR     string
+	topicLog    string
 }
 
 func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
-	onIREvent func(uint8, []byte)) *MQTTBridge {
+	onIREvent func(uint8, []byte), onLog func(uint8, []byte)) *MQTTBridge {
 	b := &MQTTBridge{
 		topicSensor: fmt.Sprintf("atom/%s/sensor", storeID),
 		topicAC:     fmt.Sprintf("atom/%s/ac", storeID),
 		topicOTA:    fmt.Sprintf("atom/%s/ota", storeID),
 		topicLearn:  fmt.Sprintf("atom/%s/learn", storeID),
 		topicIR:     fmt.Sprintf("atom/%s/ir", storeID),
+		topicLog:    fmt.Sprintf("atom/%s/log", storeID),
 	}
 
 	opts := mqtt.NewClientOptions().
@@ -57,18 +59,24 @@ func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
 	// IR events (learn captures, IRDATA acks) are JSON, so they get their own
 	// handler: the default handler feeds the sensor ingest loop, which would
 	// try to parse them as 12-byte binary frames.
-	irHandler := func(_ mqtt.Client, msg mqtt.Message) {
-		parts := strings.Split(msg.Topic(), "/")
-		id, err := strconv.Atoi(parts[len(parts)-1])
-		if err != nil || id < 0 || id > 255 {
-			slog.Warn("IR event on unparseable topic", "topic", msg.Topic())
-			return
-		}
-		payload := append([]byte(nil), msg.Payload()...)
-		if onIREvent != nil {
-			onIREvent(uint8(id), payload)
+	// Both carry a dev_id as the last topic segment, so they share a shape.
+	perDevice := func(kind string, fn func(uint8, []byte)) mqtt.MessageHandler {
+		return func(_ mqtt.Client, msg mqtt.Message) {
+			parts := strings.Split(msg.Topic(), "/")
+			id, err := strconv.Atoi(parts[len(parts)-1])
+			if err != nil || id < 0 || id > 255 {
+				slog.Warn(kind+" on unparseable topic", "topic", msg.Topic())
+				return
+			}
+			if fn != nil {
+				fn(uint8(id), append([]byte(nil), msg.Payload()...))
+			}
 		}
 	}
+	irHandler := perDevice("IR event", onIREvent)
+	// Console mirrors are debug chatter: QoS 0 and no retry, because a line
+	// lost while the link flaps is not worth delaying a learn capture for.
+	logHandler := perDevice("device log", onLog)
 
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		b.connected.Store(true)
@@ -79,6 +87,10 @@ func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
 		}
 		if tok := c.Subscribe(b.topicIR+"/+", 1, irHandler); tok.Wait() && tok.Error() != nil {
 			slog.Error("MQTT IR subscribe failed", "err", tok.Error())
+			return
+		}
+		if tok := c.Subscribe(b.topicLog+"/+", 0, logHandler); tok.Wait() && tok.Error() != nil {
+			slog.Error("MQTT device-log subscribe failed", "err", tok.Error())
 			return
 		}
 		slog.Info("MQTT connected", "broker", fmt.Sprintf("%s:%d", host, port),

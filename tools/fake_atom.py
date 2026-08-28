@@ -124,6 +124,7 @@ class FakeAtom:
         self.topic_ota = f"atom/{args.store_id}/ota"
         self.topic_learn = f"atom/{args.store_id}/learn"
         self.topic_ir = f"atom/{args.store_id}/ir"
+        self.topic_log = f"atom/{args.store_id}/log"
         self.state_path = Path(args.state_file)
         self.stop = threading.Event()
         self._load_state()
@@ -206,11 +207,23 @@ class FakeAtom:
             threading.Thread(target=self._handle_learn, args=(dev, msg.payload),
                              daemon=True).start()
 
+    def _dev_log(self, dev_id: int, text: str) -> None:
+        """Print a device line and mirror it to the gateway, as a real unit does.
+
+        The firmware tees every Serial print onto atom/{store}/log/{dev}; the
+        simulator has to as well, or the dashboard's 디버깅 panel would look
+        broken against the mock stack while working against hardware.
+        """
+        print(f"[atom] dev{dev_id} {text}")
+        self.client.publish(f"{self.topic_log}/{dev_id}", json.dumps(
+            {"type": "log", "dev_id": dev_id,
+             "uptime_ms": int(time.monotonic() * 1000), "lines": [text]}), qos=0)
+
     def _handle_ac(self, dev: FakeDevice, payload: bytes) -> None:
         try:
             cmd = p.decode_ac_packet(payload)
         except p.PacketError as exc:
-            print(f"[atom] dev{dev.dev_id} REJECTED AC frame: {exc}")
+            self._dev_log(dev.dev_id, f"REJECTED AC frame: {exc}")
             return
         if not dev.ir_ready:
             note = "IR 미탑재 -- 무시했을 것"
@@ -221,38 +234,38 @@ class FakeAtom:
             else:
                 # The real firmware would find no such slot in SPIFFS and skip.
                 note = f"미학습 조합 {slot!r} -- 무시했을 것"
-                print(f"[atom] dev{dev.dev_id} AC  {payload.hex()}  [{note}]")
+                self._dev_log(dev.dev_id, f"AC  {payload.hex()}  [{note}]")
                 return
         else:
             note = f"IR 송신 ({dev.protocol})"
         dev.ac_on = bool(cmd["power"])
         dev.setpoint = float(cmd["temp"])
-        print(f"[atom] dev{dev.dev_id} AC  {payload.hex()}  -> power={cmd['power']} "
+        self._dev_log(dev.dev_id, f"AC  {payload.hex()}  -> power={cmd['power']} "
               f"mode={cmd['mode']} temp={cmd['temp']} fan={cmd['fan']}  [{note}]")
 
     def _handle_ota(self, dev: FakeDevice, payload: bytes) -> None:
         try:
             cmd = json.loads(payload)
         except json.JSONDecodeError as exc:
-            print(f"[atom] dev{dev.dev_id} bad OTA command: {exc}")
+            self._dev_log(dev.dev_id, f"bad OTA command: {exc}")
             return
         if cmd.get("cmd") == "IRDATA":
             self._handle_irdata(dev, cmd)
             return
         url = cmd.get("url", "")
-        print(f"[atom] dev{dev.dev_id} OTA start <- {url}")
+        self._dev_log(dev.dev_id, f"OTA start <- {url}")
         try:
             started = time.time()
             with urllib.request.urlopen(url, timeout=20) as resp:
                 blob = resp.read()
             elapsed = time.time() - started
         except Exception as exc:
-            print(f"[atom] dev{dev.dev_id} OTA FAILED to fetch: {exc}")
+            self._dev_log(dev.dev_id, f"OTA FAILED to fetch: {exc}")
             return
 
         expected = cmd.get("size")
         if expected is not None and len(blob) != expected:
-            print(f"[atom] dev{dev.dev_id} OTA size mismatch: "
+            self._dev_log(dev.dev_id, f"OTA size mismatch: "
                   f"got {len(blob)}, announced {expected}")
             return
 
@@ -264,14 +277,14 @@ class FakeAtom:
             # A protocol flash replaces whatever raw bundle was loaded before.
             dev.model_id, dev.ir_slots = None, []
         self._save_state()
-        print(f"[atom] dev{dev.dev_id} OTA OK: {len(blob)} bytes in {elapsed:.2f}s "
+        self._dev_log(dev.dev_id, f"OTA OK: {len(blob)} bytes in {elapsed:.2f}s "
               f"({dev.protocol}) -- rebooted, FLAG_IR_READY now set")
 
     def _handle_irdata(self, dev: FakeDevice, cmd: dict) -> None:
         """Fetch a learned-code bundle, store it 'in SPIFFS', ack over MQTT."""
         url = cmd.get("url", "")
         model_id = cmd.get("model_id")
-        print(f"[atom] dev{dev.dev_id} IRDATA start <- {url}")
+        self._dev_log(dev.dev_id, f"IRDATA start <- {url}")
         try:
             with urllib.request.urlopen(url, timeout=20) as resp:
                 blob = resp.read()
@@ -280,13 +293,13 @@ class FakeAtom:
             if not slots:
                 raise ValueError("empty slots")
         except Exception as exc:
-            print(f"[atom] dev{dev.dev_id} IRDATA FAILED: {exc}")
+            self._dev_log(dev.dev_id, f"IRDATA FAILED: {exc}")
             self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
                 {"type": "irdata_ack", "model_id": model_id, "ok": False}), qos=1)
             return
         expected = cmd.get("size")
         if expected is not None and len(blob) != expected:
-            print(f"[atom] dev{dev.dev_id} IRDATA size mismatch: "
+            self._dev_log(dev.dev_id, f"IRDATA size mismatch: "
                   f"got {len(blob)}, announced {expected}")
             self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
                 {"type": "irdata_ack", "model_id": model_id, "ok": False}), qos=1)
@@ -299,7 +312,7 @@ class FakeAtom:
         self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
             {"type": "irdata_ack", "model_id": model_id, "ok": True,
              "slots": len(slots), "bytes": len(blob)}), qos=1)
-        print(f"[atom] dev{dev.dev_id} IRDATA OK: {len(slots)} codes, "
+        self._dev_log(dev.dev_id, f"IRDATA OK: {len(slots)} codes, "
               f"{len(blob)} bytes ({model_id}) -- stored, ack sent")
 
     def _handle_learn(self, dev: FakeDevice, payload: bytes) -> None:
@@ -307,21 +320,21 @@ class FakeAtom:
         try:
             cmd = json.loads(payload)
         except json.JSONDecodeError as exc:
-            print(f"[atom] dev{dev.dev_id} bad learn command: {exc}")
+            self._dev_log(dev.dev_id, f"bad learn command: {exc}")
             return
         if cmd.get("cmd") == "LEARN_CANCEL":
-            print(f"[atom] dev{dev.dev_id} learn canceled "
+            self._dev_log(dev.dev_id, f"learn canceled "
                   f"(session {cmd.get('session_id')})")
             return
         session_id, slot = cmd.get("session_id"), cmd.get("slot")
-        print(f"[atom] dev{dev.dev_id} LEARN {slot} (session {session_id}) "
+        self._dev_log(dev.dev_id, f"LEARN {slot} (session {session_id}) "
               f"-- waiting for the remote...")
         if self.args.learn_timeout:
             time.sleep(min(float(cmd.get("timeout_s") or 30), 5.0))
             self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
                 {"type": "capture", "session_id": session_id, "slot": slot,
                  "ok": False, "error": "timeout"}), qos=1)
-            print(f"[atom] dev{dev.dev_id} LEARN {slot} timed out (--learn-timeout)")
+            self._dev_log(dev.dev_id, f"LEARN {slot} timed out (--learn-timeout)")
             return
         time.sleep(1.5)
         # Deterministic pseudo-signal: same store/dev/slot -> same waveform,
@@ -334,7 +347,7 @@ class FakeAtom:
         self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
             {"type": "capture", "session_id": session_id, "slot": slot,
              "ok": True, "freq_khz": 38, "len": len(raw), "raw": raw}), qos=1)
-        print(f"[atom] dev{dev.dev_id} LEARN {slot} captured ({len(raw)} entries)")
+        self._dev_log(dev.dev_id, f"LEARN {slot} captured ({len(raw)} entries)")
 
     # -- main loop ---------------------------------------------------------
 
@@ -344,10 +357,10 @@ class FakeAtom:
         if dev.faulted:
             if dev.rng.random() < 0.25:          # faults clear after a few seconds
                 dev.faulted = False
-                print(f"[atom] dev{dev.dev_id} sensor recovered")
+                self._dev_log(dev.dev_id, "sensor recovered")
         elif dev.rng.random() < self.args.fault_rate:
             dev.faulted = True
-            print(f"[atom] dev{dev.dev_id} sensor FAULT (FLAG_SENSOR_FAULT set)")
+            self._dev_log(dev.dev_id, "sensor FAULT (FLAG_SENSOR_FAULT set)")
 
     def run(self) -> None:
         self.client.connect(self.args.broker, self.args.port, 30)

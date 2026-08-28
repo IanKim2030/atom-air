@@ -80,6 +80,7 @@ reachable.
 | `GET` | `/api/v1/admin/history` | audit trail across all stores |
 | `GET`·`POST` | `/api/v1/admin/owners` | owner (점주) accounts — one login, many stores |
 | `DELETE` | `/api/v1/stores/{id}/devices/{dev_id}` | admin: retire a device's card (409 while it is still publishing) |
+| `GET` | `/api/v1/stores/{id}/devices/{dev_id}/log` | admin: the board's mirrored serial console (in-memory, last 300 lines) |
 | `GET` | `/api/v1/stores/{id}/stats?minutes=` | 1-minute statistics |
 | `GET` | `/api/v1/stores/{id}/status` | gateway online, viewers, AC state, licence, SOTA progress |
 | `GET` | `/api/v1/ac/models` | AC brand/model catalog for the SOTA popup |
@@ -88,8 +89,8 @@ reachable.
 ### WebSocket messages
 
 **Browser → cloud** — `ac_control` · `sota_deploy` · `request_stats` · `ping`
-**Cloud → browser** — `hello` · `live` · `stats` · `gateway_status` · `ac_state` · `ac_ack` · `sota_progress` · `error` · `pong`
-**Gateway → cloud** — binary 12-byte sensor frames (one or more per frame) · `minute_stats` · `sota_progress` · `ac_ack` · `gateway_status`
+**Cloud → browser** — `hello` · `live` · `stats` · `gateway_status` · `ac_state` · `ac_ack` · `sota_progress` · `device_meta` · `device_removed` · `device_log` · `error` · `pong`
+**Gateway → cloud** — binary 12-byte sensor frames (one or more per frame) · `minute_stats` · `sota_progress` · `ac_ack` · `ir_capture` · `device_log` · `gateway_status`
 **Cloud → gateway** — `START_LIVE_STREAM` · `STOP_LIVE_STREAM` · `AC_CONTROL` (packet as hex) · `DEPLOY_FIRMWARE`
 
 ## Licence & grace period

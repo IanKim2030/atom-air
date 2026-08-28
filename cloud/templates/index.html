@@ -358,6 +358,44 @@
   </form>
 </div>
 
+<!-- ══ DEBUG MODAL (관리자: 보드 시리얼 출력) ══════════════════════════ -->
+<div id="debug-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden items-center justify-center p-3 sm:p-6">
+  <div class="glass-panel-glow rounded-3xl w-full max-w-5xl h-[88vh] sm:h-[85vh] p-4 sm:p-6 flex flex-col gap-3 border border-slate-700 shadow-2xl">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
+      <div class="min-w-0">
+        <h3 class="font-bold text-base text-white flex items-center gap-2">
+          <i data-lucide="terminal" class="w-4 h-4 text-emerald-300 shrink-0"></i>보드 출력
+        </h3>
+        <p class="text-xs text-slate-400 truncate" id="debug-sub">—</p>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <span id="debug-count" class="hidden sm:inline text-[11px] font-mono text-slate-500"></span>
+        <label class="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none px-2 py-1.5 rounded-xl bg-slate-900 border border-slate-800">
+          <input type="checkbox" id="debug-follow" checked class="w-3.5 h-3.5 accent-emerald-500">최신 따라가기
+        </label>
+        <button type="button" id="debug-ir-btn" onclick="toggleIrMonitor()"
+                class="touch-btn px-3 py-1.5 rounded-xl text-[11px] font-bold bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-600 hover:text-white flex items-center gap-1.5">
+          <i data-lucide="radio" class="w-3.5 h-3.5"></i><span id="debug-ir-label">IR 수신 대기</span>
+        </button>
+        <button type="button" onclick="clearDeviceLog()"
+                class="touch-btn px-3 py-1.5 rounded-xl text-[11px] font-bold bg-slate-800 text-slate-400 hover:text-white">지우기</button>
+        <button type="button" onclick="closeModal('debug-modal')"
+                class="touch-btn p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+    </div>
+
+    <div id="debug-console"
+         class="flex-1 min-h-0 overflow-auto rounded-2xl bg-slate-950/90 border border-slate-800 p-3 sm:p-4
+                font-mono text-[11px] sm:text-xs leading-relaxed text-slate-300 whitespace-pre-wrap break-all">
+    </div>
+
+    <p class="text-[10px] text-slate-500 shrink-0">
+      장비가 시리얼(USB)로 인쇄하는 내용을 그대로 중계합니다. 게이트웨이가 온라인이어야 새 줄이 들어오며,
+      최근 <span class="font-mono">300</span>줄까지 서버 메모리에 남습니다.
+    </p>
+  </div>
+</div>
+
 <!-- ══ DEVICE EDIT MODAL (장비명·위치 수정) ════════════════════════════ -->
 <div id="device-edit-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden items-center justify-center p-4">
   <form class="glass-panel-glow rounded-3xl max-w-sm w-full p-6 space-y-4 border border-slate-700 shadow-2xl" id="device-edit-form">
@@ -602,6 +640,9 @@ function onMessage(msg) {
     case "sota_progress":
       onSotaProgress(msg);
       break;
+    case "device_log":
+      onDeviceLog(msg.dev_id, msg.lines);
+      break;
     case "device_removed":
       removeDeviceCard(msg.dev_id);
       break;
@@ -749,9 +790,11 @@ function renderGrid() {
 
   lucide.createIcons();
   // Only a replaced card lost its canvas; refill just those stats panels.
-  for (const [devId, p] of Object.entries(S.cardPanels))
-    if (!p.entering && p.kind === "stats" && replaced.has(Number(devId)))
-      loadCardStats(Number(devId));
+  for (const [devId, p] of Object.entries(S.cardPanels)) {
+    const id = Number(devId);
+    if (p.entering || !replaced.has(id)) continue;
+    if (p.kind === "stats") loadCardStats(id);
+  }
 }
 
 function cardHtml(d) {
@@ -857,6 +900,10 @@ function cardHtml(d) {
               class="touch-btn flex-1 min-w-0 py-2 bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold">
         <i data-lucide="upload-cloud" class="w-3.5 h-3.5 shrink-0"></i>
         <span class="truncate">${d.model ? "에어컨 모델 변경 (재배포)" : "에어컨 제조사·모델 선택"}</span>
+      </button>
+      <button onclick="openDebugModal(${d.dev_id})" title="보드 출력 보기 (관리자 전용)"
+              class="touch-btn shrink-0 px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 text-emerald-300 hover:text-white rounded-xl flex items-center justify-center">
+        <i data-lucide="terminal" class="w-3.5 h-3.5"></i>
       </button>
       <button onclick="deleteDevice(${d.dev_id})" title="장비 카드 삭제 (관리자 전용)"
               class="touch-btn shrink-0 px-3 py-2 bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-xl flex items-center justify-center">
@@ -1210,6 +1257,130 @@ function setCardStatsRange(devId, minutes) {
   loadCardStats(devId);
 }
 
+// ── board console (관리자 디버깅 모달) ───────────────────────────────────
+// Lines are kept per device rather than per open window: the socket fills the
+// buffer whether or not anyone is looking, so closing the modal and reopening
+// it does not lose what the board said in between.
+const deviceLogs = new Map();   // dev_id -> [{ts, text}]
+const DEVICE_LOG_KEEP = 300;
+let debugDevId = null;          // which device the modal is showing, if open
+
+function logLineHtml(line) {
+  const t = new Date(line.ts).toLocaleTimeString("ko-KR", { hour12: false });
+  // Colour by the [tag] the firmware prints, so a wifi problem stands out from
+  // OTA chatter at a glance.
+  const tag = (line.text.match(/^\[(\w+)\]/) || [])[1] || "";
+  const tone = { wifi: "text-sky-300", mqtt: "text-amber-300", ota: "text-purple-300",
+                 irdata: "text-purple-300", ir: "text-emerald-300",
+                 learn: "text-emerald-300", boot: "text-slate-100",
+                 ac: "text-cyan-300", scan: "text-slate-300",
+                 serial: "text-rose-300" }[tag] || "text-slate-300";
+  return `<div class="flex gap-3"><span class="text-slate-600 shrink-0">${t}</span>` +
+         `<span class="${tone} min-w-0">${esc(line.text)}</span></div>`;
+}
+
+function debugFollowing() { return $("debug-follow")?.checked !== false; }
+
+function paintDeviceLog() {
+  const box = $("debug-console");
+  if (!box || debugDevId === null) return;
+  const lines = deviceLogs.get(debugDevId) || [];
+  box.innerHTML = lines.length
+    ? lines.map(logLineHtml).join("")
+    : `<p class="text-slate-600">아직 출력이 없습니다. 장비가 다음 줄을 인쇄하면 여기에 나타납니다.</p>`;
+  $("debug-count").textContent = lines.length ? `${lines.length}줄` : "";
+  if (debugFollowing()) box.scrollTop = box.scrollHeight;
+}
+
+async function openDebugModal(devId) {
+  if (debugDevId !== devId) { irMonitorUntil = 0; paintIrButton(); }
+  debugDevId = devId;
+  const d = S.store.devices.get(devId) || {};
+  $("debug-sub").textContent =
+    `${d.name || "디바이스 " + devId} · dev${devId} · ${S.current}`;
+  $("debug-console").innerHTML = `<p class="text-slate-600">불러오는 중…</p>`;
+  $("debug-count").textContent = "";
+  showModal("debug-modal");
+  let lines = [];
+  try {
+    lines = (await api(`/api/v1/stores/${encodeURIComponent(S.current)}/devices/${devId}/log`)).lines || [];
+  } catch (err) {
+    if (debugDevId === devId) $("debug-console").innerHTML = `<p class="text-rose-400">${esc(err.message)}</p>`;
+    return;
+  }
+  deviceLogs.set(devId, lines.slice(-DEVICE_LOG_KEEP));
+  if (debugDevId === devId) paintDeviceLog();
+}
+
+// Appends instead of repainting: the console is a scrollback, and rebuilding it
+// on every arriving line would fight whatever the reader has scrolled to.
+function onDeviceLog(devId, lines) {
+  if (!lines || !lines.length) return;
+  const buf = deviceLogs.get(devId) || [];
+  buf.push(...lines);
+  if (buf.length > DEVICE_LOG_KEEP) buf.splice(0, buf.length - DEVICE_LOG_KEEP);
+  deviceLogs.set(devId, buf);
+  const box = $("debug-console");
+  if (!box || debugDevId !== devId || $("debug-modal").classList.contains("hidden")) return;
+  if (buf.length === lines.length) { paintDeviceLog(); return; }   // replaces the placeholder
+  box.insertAdjacentHTML("beforeend", lines.map(logLineHtml).join(""));
+  while (box.childElementCount > DEVICE_LOG_KEEP) box.firstElementChild.remove();
+  $("debug-count").textContent = `${buf.length}줄`;
+  if (debugFollowing()) box.scrollTop = box.scrollHeight;
+}
+
+// ── IR 수신 모니터 ──────────────────────────────────────────────────────
+// Arms the board's receiver for a fixed window. Nothing is stored: the point is
+// to see the timings scroll past and know the remote reaches the unit, which is
+// the question you have before you know which slot to learn into.
+const IR_MONITOR_SECONDS = 20;
+let irMonitorUntil = 0;
+let irMonitorTimer = null;
+
+function paintIrButton() {
+  const label = $("debug-ir-label");
+  if (!label) return;
+  const left = Math.ceil((irMonitorUntil - Date.now()) / 1000);
+  if (left > 0) {
+    label.textContent = `수신 대기 ${left}초 (중지)`;
+  } else {
+    label.textContent = "IR 수신 대기";
+    clearInterval(irMonitorTimer);
+    irMonitorTimer = null;
+    irMonitorUntil = 0;
+  }
+}
+
+async function toggleIrMonitor() {
+  if (debugDevId === null) return;
+  const cancel = irMonitorUntil > Date.now();
+  try {
+    await api(`/api/v1/stores/${encodeURIComponent(S.current)}/devices/${debugDevId}/ir-monitor`,
+              { method: "POST",
+                body: JSON.stringify({ timeout_s: IR_MONITOR_SECONDS, cancel }) });
+  } catch (err) { toast(err.message); return; }
+  irMonitorUntil = cancel ? 0 : Date.now() + IR_MONITOR_SECONDS * 1000;
+  if (!cancel) {
+    toast("리모컨을 장비에 향하게 하고 버튼을 누르세요.");
+    if (!irMonitorTimer) irMonitorTimer = setInterval(paintIrButton, 500);
+  }
+  paintIrButton();
+}
+
+// Clears the server's ring as well as this view: wiping the noise, running one
+// operation and reading only what it printed is the whole point, and a clear
+// that the next reopen undoes would not deliver that.
+async function clearDeviceLog() {
+  if (debugDevId === null) return;
+  const devId = debugDevId;
+  deviceLogs.set(devId, []);
+  paintDeviceLog();
+  try {
+    await api(`/api/v1/stores/${encodeURIComponent(S.current)}/devices/${devId}/log`,
+              { method: "DELETE" });
+  } catch (err) { toast(err.message); }
+}
+
 async function loadCardStats(devId) {
   const mins = S.cardPanels[devId]?.mins || 180;
   let points = [];
@@ -1511,7 +1682,7 @@ function showModal(id) { const m = $(id); m.classList.remove("hidden"); m.classL
 function closeModal(id) {
   const m = $(id); m.classList.add("hidden"); m.classList.remove("flex");
 }
-document.querySelectorAll("#stats-modal, #account-modal, #device-edit-modal, #sota-modal").forEach((m) =>
+document.querySelectorAll("#stats-modal, #account-modal, #device-edit-modal, #sota-modal, #debug-modal").forEach((m) =>
   m.addEventListener("click", (e) => { if (e.target === m) closeModal(m.id); }));
 
 document.addEventListener("DOMContentLoaded", boot);

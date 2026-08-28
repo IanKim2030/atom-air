@@ -28,6 +28,8 @@ type Command struct {
 	SessionID string `json:"session_id"`
 	Slot      string `json:"slot"`
 	TimeoutS  int    `json:"timeout_s"`
+	// IR_MONITOR: arm the receiver to print what it hears, or stop early.
+	Cancel bool `json:"cancel"`
 	// DEPLOY_IRDATA carries the learned code bundle inline; the gateway writes
 	// it into the firmware dir verbatim and serves it over the OTA HTTP server.
 	Bundle json.RawMessage `json:"bundle"`

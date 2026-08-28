@@ -146,7 +146,7 @@ func (s *Service) Run(ctx context.Context) error {
 		slog.Info("MQTT disabled (--no-mqtt); no broker will be contacted")
 	} else {
 		s.mqtt = NewMQTTBridge(s.cfg.MQTTHost, s.cfg.MQTTPort, s.cfg.StoreID,
-			s.onFrame, s.onIREvent)
+			s.onFrame, s.onIREvent, s.onDeviceLog)
 		s.mqtt.Start()
 		defer s.mqtt.Stop()
 	}
@@ -467,6 +467,8 @@ func (s *Service) handleCommand(cmd Command) {
 	case "LEARN_IR":
 		s.handleLearn(cmd, false)
 
+	case "IR_MONITOR":
+		s.handleIRMonitor(cmd)
 	case "LEARN_CANCEL":
 		s.handleLearn(cmd, true)
 
@@ -478,6 +480,33 @@ func (s *Service) handleCommand(cmd Command) {
 // handleLearn relays a learn start/cancel to the device over MQTT. A publish
 // that cannot happen fails fast with a synthetic capture-failure, so the admin
 // is not left staring at a 30-second timeout.
+// handleIRMonitor arms a device's receiver with nowhere to store what it hears:
+// every frame it decodes is printed to the device console, which the log topic
+// carries to the dashboard. This is the "is anything reaching the sensor at
+// all?" tool, and it deliberately does not create a learn session -- nothing is
+// captured, so nothing can be half-saved against the wrong slot.
+func (s *Service) handleIRMonitor(cmd Command) {
+	target := uint8(1)
+	if cmd.TargetID > 0 && cmd.TargetID < 256 {
+		target = uint8(cmd.TargetID)
+	}
+	action := "MONITOR"
+	if cmd.Cancel {
+		action = "MONITOR_CANCEL"
+	}
+	if s.cfg.Simulate {
+		slog.Info("[simulate] IR monitor ignored", "dev", target)
+		return
+	}
+	if !s.mqtt.PublishLearn(target, map[string]any{
+		"cmd": action, "timeout_s": cmd.TimeoutS,
+	}) {
+		slog.Warn("IR monitor command could not be published", "dev", target)
+		return
+	}
+	slog.Info("IR monitor", "dev", target, "action", action, "timeout_s", cmd.TimeoutS)
+}
+
 func (s *Service) handleLearn(cmd Command, cancel bool) {
 	target := uint8(1)
 	if cmd.TargetID > 0 && cmd.TargetID < 256 {
@@ -582,6 +611,24 @@ func (s *Service) onIREvent(devID uint8, payload []byte) {
 	default:
 		slog.Debug("unhandled IR event", "dev", devID, "type", evt.Type)
 	}
+}
+
+// onDeviceLog relays a device's mirrored console output to the cloud, where it
+// backs the dashboard's per-card 디버깅 panel. Nothing is stored or acted on
+// here: a dropped line is a dropped line, and the gateway's own slog stream is
+// the record that matters for the gateway itself.
+func (s *Service) onDeviceLog(devID uint8, payload []byte) {
+	var evt struct {
+		Lines    []string `json:"lines"`
+		UptimeMs int64    `json:"uptime_ms"`
+	}
+	if err := json.Unmarshal(payload, &evt); err != nil || len(evt.Lines) == 0 {
+		return
+	}
+	s.cloud.SendJSON(map[string]any{
+		"type": "device_log", "dev_id": devID,
+		"lines": evt.Lines, "uptime_ms": evt.UptimeMs,
+	})
 }
 
 func (s *Service) handleACControl(cmd Command) {

@@ -7,6 +7,7 @@ executable specification is [`tools/fake_atom.py`](../tools/fake_atom.py):
 |---|---|---|
 | publishes | `atom/{store}/sensor` | 12-byte `SensorPacket`, 1 Hz |
 | publishes | `atom/{store}/ir/{dev_id}` | JSON IR events: learn capture, IRDATA ack |
+| publishes | `atom/{store}/log/{dev_id}` | JSON `{"lines":[...]}` — the serial console, mirrored |
 | subscribes | `atom/{store}/ac/{dev_id}` | 8-byte AC control frame → IR burst |
 | subscribes | `atom/{store}/ota/{dev_id}` | `{"cmd":"OTA","url","protocol","model","size"}` or `{"cmd":"IRDATA","url","model_id","size","slots"}` |
 | subscribes | `atom/{store}/learn/{dev_id}` | `{"cmd":"LEARN","session_id","slot","timeout_s"}` / `{"cmd":"LEARN_CANCEL"}` |
@@ -137,6 +138,20 @@ which is why an obscure unit works exactly as well as a common one:
 - A bare device gets `atom_ac.bin` flashed automatically before its first
   IRDATA push, so registering and learning a remote is the only thing an
   installer has to do.
+
+## Console mirror (웹 디버깅 패널)
+
+Every line the firmware prints to USB serial is also buffered and published to
+`atom/{store}/log/{dev_id}`, which the gateway relays to the cloud and the
+dashboard shows behind each card's **디버깅** button (admin only). A technician
+reads the same `[wifi]`/`[mqtt]`/`[ota]`/`[ir]` lines a developer sees on a
+monitor, without walking to the unit with a cable.
+
+The ring holds the last 24 lines, so the boot banner — printed long before MQTT
+is up — still arrives once the link comes back. Batches are rate-limited to one
+message every 400 ms and capped at 600 bytes, which keeps a burst inside the
+base build's 1 KB MQTT buffer. Nothing is filtered: what serial shows, the panel
+shows.
 
 ## Notes
 
