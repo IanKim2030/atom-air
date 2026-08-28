@@ -269,11 +269,11 @@
   <div id="tab-acmodels" class="tab-body space-y-5 hidden">
     <div class="glass-panel rounded-2xl p-5 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h3 class="font-bold text-white text-base">에어컨 모델 관리</h3>
+        <h3 class="font-bold text-white text-base">학습 리모컨 관리</h3>
         <p class="text-xs text-slate-400 mt-1">
-          <span class="text-indigo-300 font-semibold">protocol</span> 방식은 IR 라이브러리가 신호를 생성하고,
-          <span class="text-purple-300 font-semibold">raw</span> 방식은 실제 리모컨에서 학습한 신호를 그대로 재생합니다 (제조사 무관).
-          raw 모델은 학습 후 장비 업그레이드 탭에서 배포하세요.</p>
+          제어는 <span class="text-purple-300 font-semibold">실제 리모컨에서 학습한 신호를 그대로 재생</span>하는 방식 하나뿐입니다 —
+          제조사·모델 데이터베이스가 없으므로 어떤 에어컨이든 학습만 하면 동작합니다.
+          등록 → 리모컨 학습 → 장비 업그레이드 탭에서 배포 순서로 진행하세요.</p>
       </div>
       <button onclick="openModelModal()" class="touch-btn px-3.5 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow">
         <i data-lucide="plus" class="w-4 h-4"></i><span>모델 등록</span>
@@ -464,14 +464,6 @@
       <div><label>브랜드</label><input id="mdl-brand" placeholder="예: Winia" required maxlength="64"></div>
       <div><label>모델명</label><input id="mdl-name" placeholder="예: WPVW09C" required maxlength="64"></div>
     </div>
-    <div><label>제어 방식</label>
-      <select id="mdl-kind" onchange="syncModelKind()">
-        <option value="raw">raw — 리모컨 학습 (모든 제조사)</option>
-        <option value="protocol">protocol — IR 라이브러리 내장 프로토콜</option>
-      </select></div>
-    <div id="mdl-protocol-row" class="hidden"><label>IR 프로토콜 이름</label>
-      <input id="mdl-protocol" placeholder="예: SAMSUNG_AC" maxlength="32" class="font-mono">
-      <p class="text-[10px] text-slate-500 mt-1">IRremoteESP8266이 지원하는 프로토콜 이름을 입력하세요.</p></div>
     <div><label>메모 (선택)</label><input id="mdl-notes" maxlength="256" placeholder="예: 2020년형 벽걸이"></div>
     <p id="model-error" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2.5"></p>
     <div class="flex gap-2 pt-1">
@@ -761,7 +753,7 @@ async function loadOtaDevices() {
         <td class="px-4 py-3">${esc(store.name || store.store_id)}
           <span class="text-[10px] text-slate-400">${store.gateway_online ? "· GW 온라인" : "· GW 오프라인"}</span></td>
         <td class="px-4 py-3 font-mono">${d.model
-          ? `<span class="text-indigo-300 font-semibold">${esc(d.brand || "")}</span> ${esc(d.model)} <span class="text-[10px] text-slate-400">(${esc(d.protocol || "")})</span>`
+          ? `<span class="text-indigo-300 font-semibold">${esc(d.brand || "")}</span> ${esc(d.model)}`
           : '<span class="text-slate-400">기본 펌웨어</span>'}</td>
         <td class="px-4 py-3">${d.model
           ? '<span class="text-emerald-400 font-bold">활성</span>'
@@ -795,17 +787,15 @@ async function openSotaModal(storeId, devId) {
 }
 function fillModels() {
   const brand = S.catalog[Number($("sota-brand").value)] || { models: [] };
-  $("sota-model").innerHTML = brand.models.map((m) => {
-    const raw = m.kind === "raw";
-    const tag = raw ? ` — 리모컨 학습 ${(m.slots || []).length}/${m.slot_total || 27}` : "";
-    return `<option value="${esc(m.id)}">${esc(m.name)}${tag}</option>`;
-  }).join("");
+  $("sota-model").innerHTML = brand.models.map((m) =>
+    `<option value="${esc(m.id)}">${esc(m.name)} — 학습 ${(m.slots || []).length}/${m.slot_total || 27}</option>`
+  ).join("");
   syncSotaModel();
 }
 function syncSotaModel() {
   const brand = S.catalog[Number($("sota-brand").value)];
   const model = brand?.models.find((m) => m.id === $("sota-model").value);
-  const bare = model?.kind === "raw" && !(model.slots || []).length;
+  const bare = !!model && !(model.slots || []).length;
   $("sota-submit").disabled = bare;
   if (bare) showErr("sota-error", "학습된 리모컨 코드가 없습니다. '에어컨 모델' 탭에서 먼저 학습하세요.");
   else $("sota-error").classList.add("hidden");
@@ -823,7 +813,7 @@ $("sota-form").addEventListener("submit", async (e) => {
     await api(`/api/v1/admin/stores/${encodeURIComponent(S.sotaTarget.storeId)}/sota`, {
       method: "POST", body: JSON.stringify({
         target_id: S.sotaTarget.devId, brand: brand.brand, model: model.name,
-        model_id: model.id, protocol: model.protocol }) });
+        model_id: model.id }) });
     $("sota-progress").classList.remove("hidden");
     startSotaPoll();
   } catch (err) {
@@ -881,17 +871,12 @@ async function loadAcModels() {
       <td class="px-4 py-3.5"><span class="font-bold text-white">${esc(m.brand)}</span>
         <span class="text-slate-300">${esc(m.name)}</span>
         ${m.notes ? `<div class="text-[10px] text-slate-500">${esc(m.notes)}</div>` : ""}</td>
-      <td class="px-4 py-3.5">${m.kind === "raw"
-        ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300">raw 학습</span>'
-        : `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 font-mono">${esc(m.protocol || "")}</span>`}</td>
-      <td class="px-4 py-3.5">${m.kind === "raw"
-        ? `<span class="font-mono font-bold ${m.captured ? "text-emerald-300" : "text-amber-300"}">${m.captured} / ${S.slotKeys.length}</span>`
-        : '<span class="text-slate-500">불필요</span>'}</td>
+      <td class="px-4 py-3.5"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300">리모컨 학습</span></td>
+      <td class="px-4 py-3.5"><span class="font-mono font-bold ${m.captured ? "text-emerald-300" : "text-amber-300"}">${m.captured} / ${S.slotKeys.length}</span></td>
       <td class="px-4 py-3.5 font-mono">${m.devices_using ? `${m.devices_using}대` : "—"}</td>
       <td class="px-4 py-3.5 text-right space-x-1.5 whitespace-nowrap">
-        ${m.kind === "raw" ? `
-          <button onclick="openLearnModal('${esc(m.model_id)}')"
-             class="touch-btn px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white rounded-xl text-xs font-semibold">리모컨 학습</button>` : ""}
+        <button onclick="openLearnModal('${esc(m.model_id)}')"
+           class="touch-btn px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white rounded-xl text-xs font-semibold">리모컨 학습</button>
         <button onclick="deleteModel('${esc(m.model_id)}')"
            class="touch-btn px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-xl text-xs font-semibold">삭제</button>
       </td>
@@ -899,17 +884,12 @@ async function loadAcModels() {
     : '<tr><td colspan="5" class="px-4 py-10 text-center text-slate-400">등록된 모델이 없습니다.</td></tr>';
 }
 
-function syncModelKind() {
-  $("mdl-protocol-row").classList.toggle("hidden", $("mdl-kind").value !== "protocol");
-}
-function openModelModal() { $("model-form").reset(); syncModelKind(); showModal("model-modal"); }
+function openModelModal() { $("model-form").reset(); showModal("model-modal"); }
 $("model-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
     await api("/api/v1/admin/ac/models", { method: "POST", body: JSON.stringify({
       brand: $("mdl-brand").value.trim(), name: $("mdl-name").value.trim(),
-      kind: $("mdl-kind").value,
-      protocol: $("mdl-protocol").value.trim() || null,
       notes: $("mdl-notes").value.trim() || null }) });
     S.catalog = null;   // the SOTA modal must see the new model
     closeModal("model-modal"); loadAcModels();

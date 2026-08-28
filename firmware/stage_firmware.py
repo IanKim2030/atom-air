@@ -1,10 +1,9 @@
 """Stage the atom_ac OTA image where the gateway serves it.
 
-The gateway resolves a SOTA deploy to ``<data-dir>\\firmware\\atom_ac_<protocol>.bin``
-(protocol lower-cased). The atom_ac build is universal — IRac speaks every
-protocol in the cloud's model catalog and the device learns *which* one from
-the OTA command it stores in NVS — so one image is copied under every
-protocol-specific name the gateway may look for.
+The gateway serves exactly one image, ``<data-dir>\\firmware\\atom_ac.bin``.
+There is nothing brand-specific to stage: the device replays timings learned
+from the customer's own remote, so the same binary drives every air
+conditioner.
 
     pio run -e atom_ac              # build first (or pass --build)
     python stage_firmware.py        # stage into %ProgramData%\\AtomAir\\firmware
@@ -19,11 +18,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-# Keep in sync with the seeded ac_models registry in cloud/cloud_server.py.
-# "RAW" is the universal image for learned-remote (raw IR replay) deploys.
-PROTOCOLS = ["SAMSUNG_AC", "LG2", "LG", "DAIKIN", "DAIKIN216",
-             "MITSUBISHI_AC", "CARRIER_AC", "RAW"]
 
 HERE = Path(__file__).resolve().parent
 IMAGE = HERE / ".pio" / "build" / "atom_ac" / "firmware.bin"
@@ -50,12 +44,18 @@ def main() -> None:
 
     firmware_dir = args.data_dir / "firmware"
     firmware_dir.mkdir(parents=True, exist_ok=True)
-    for proto in PROTOCOLS:
-        dest = firmware_dir / f"atom_ac_{proto.lower()}.bin"
-        shutil.copy2(IMAGE, dest)
-        print(f"staged {dest}")
-    print(f"\n{len(PROTOCOLS)} images staged from {IMAGE.name} "
-          f"({IMAGE.stat().st_size // 1024} KB)")
+
+    # Protocol-named copies from before learned-remote-only control. Leaving
+    # them behind wastes ~10MB and invites a deploy of a stale image.
+    stale = sorted(firmware_dir.glob("atom_ac_*.bin"))
+    for old in stale:
+        old.unlink()
+    if stale:
+        print(f"removed {len(stale)} obsolete protocol-named image(s)")
+
+    dest = firmware_dir / "atom_ac.bin"
+    shutil.copy2(IMAGE, dest)
+    print(f"staged {dest} ({IMAGE.stat().st_size // 1024} KB)")
 
 
 if __name__ == "__main__":

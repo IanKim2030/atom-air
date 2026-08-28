@@ -330,14 +330,15 @@ CREATE TABLE IF NOT EXISTS devices (
     PRIMARY KEY (store_id, dev_id)
 );
 
--- AC 모델 레지스트리: 관리자 화면에서 등록/수정. kind='protocol'은 IRac가
--- 프로토콜 이름으로 신호를 생성하고, kind='raw'는 학습된 ir_codes를 재생한다.
+-- 학습 리모컨 레지스트리: 관리자 화면에서 등록/수정. 모든 항목이 학습된
+-- ir_codes를 재생한다 -- 기기가 브랜드별 프로토콜을 흉내내는 경로는 없다.
+-- kind/protocol 컬럼은 그 시절의 잔재이며 마이그레이션이 모두 'raw'로 맞춘다.
 CREATE TABLE IF NOT EXISTS ac_models (
     model_id   TEXT PRIMARY KEY,             -- slug, URL과 파일명에 쓰임
     brand      TEXT NOT NULL,
     name       TEXT NOT NULL,
-    kind       TEXT NOT NULL DEFAULT 'protocol',   -- protocol | raw
-    protocol   TEXT,                         -- IRac protocol name (kind=protocol)
+    kind       TEXT NOT NULL DEFAULT 'raw',   -- 항상 'raw' (구버전 호환용)
+    protocol   TEXT,                          -- 미사용 (구버전 호환용)
     notes      TEXT,
     created_at TEXT,
     updated_at TEXT
@@ -371,20 +372,6 @@ def _connect() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
     return con
-
-
-# Seeded into ac_models on first boot (kind=protocol). After that the registry
-# lives in the DB and is managed from the admin screen.
-DEFAULT_AC_MODELS = [
-    ("samsung-ar09", "Samsung", "AR09TXHZAWK", "SAMSUNG_AC"),
-    ("samsung-generic", "Samsung", "무풍 시리즈 (범용)", "SAMSUNG_AC"),
-    ("lg-s3nq", "LG", "휘젠 S3NQ", "LG2"),
-    ("lg-generic", "LG", "LG 범용 (AKB)", "LG"),
-    ("daikin-ftxs", "Daikin", "FTXS Series", "DAIKIN"),
-    ("daikin-arc", "Daikin", "ARC Series", "DAIKIN216"),
-    ("mitsubishi-msz", "Mitsubishi", "MSZ Series", "MITSUBISHI_AC"),
-    ("carrier-42q", "Carrier", "42Q Series", "CARRIER_AC"),
-]
 
 
 def init_db() -> None:
@@ -433,14 +420,18 @@ def init_db() -> None:
                         (GATEWAY_TOKEN, row["store_id"]))
             log.warning("store %s had no gateway token; seeded with the shared one",
                         row["store_id"])
-        if not con.execute("SELECT COUNT(*) FROM ac_models").fetchone()[0]:
-            now = iso(utcnow())
-            con.executemany(
-                "INSERT INTO ac_models (model_id, brand, name, kind, protocol,"
-                " created_at, updated_at) VALUES (?,?,?,'protocol',?,?,?)",
-                [(mid, brand, name, proto, now, now)
-                 for mid, brand, name, proto in DEFAULT_AC_MODELS])
-            log.info("seeded %d AC models", len(DEFAULT_AC_MODELS))
+        # There is no brand catalog to seed any more: control is entirely by
+        # replaying a remote the installer captured, so a model row only means
+        # anything once someone has learned into it. Rows written under the old
+        # protocol scheme are converted rather than deleted -- they keep their
+        # name and simply need learning before they can drive anything.
+        converted = con.execute(
+            "UPDATE ac_models SET kind='raw', protocol=NULL"
+            " WHERE kind!='raw' OR protocol IS NOT NULL").rowcount
+        if converted:
+            log.warning("converted %d protocol-based AC model(s) to learned-remote;"
+                        " they need IR learning before they can control anything",
+                        converted)
         con.commit()
     log.info("sqlite ready at %s", DB_PATH)
 
@@ -973,14 +964,15 @@ def _slugify_model_id(brand: str, name: str) -> str:
 
 
 def db_ac_catalog() -> list[dict]:
-    """Brand-grouped catalog, shape-compatible with the old hardcoded list.
+    """Brand-grouped catalog of learned remotes.
 
-    kind=raw models report protocol "RAW" plus their captured slot list, so the
-    dashboards can gate the remote UI to learned combinations.
+    Every entry reports protocol "RAW" and its captured slot list, so the
+    dashboards can gate the remote UI to the combinations actually learned.
+    "brand" is just how the installer chose to file it -- nothing reads it.
     """
     with closing(_connect()) as con:
         models = con.execute(
-            "SELECT model_id, brand, name, kind, protocol FROM ac_models"
+            "SELECT model_id, brand, name FROM ac_models"
             " ORDER BY brand, name").fetchall()
         code_rows = con.execute(
             "SELECT model_id, slot FROM ir_codes ORDER BY model_id, slot").fetchall()
@@ -989,13 +981,11 @@ def db_ac_catalog() -> list[dict]:
         captured.setdefault(row["model_id"], []).append(row["slot"])
     grouped: dict[str, list[dict]] = {}
     for m in models:
-        entry = {"id": m["model_id"], "name": m["name"], "kind": m["kind"],
-                 "protocol": m["protocol"]}
-        if m["kind"] == "raw":
-            entry["protocol"] = RAW_PROTOCOL
-            entry["slots"] = captured.get(m["model_id"], [])
-            entry["slot_total"] = len(IR_SLOTS)
-        grouped.setdefault(m["brand"], []).append(entry)
+        grouped.setdefault(m["brand"], []).append({
+            "id": m["model_id"], "name": m["name"], "kind": "raw",
+            "protocol": RAW_PROTOCOL,
+            "slots": captured.get(m["model_id"], []),
+            "slot_total": len(IR_SLOTS)})
     return [{"brand": brand, "models": entries}
             for brand, entries in grouped.items()]
 
@@ -1014,8 +1004,7 @@ def db_ac_model(model_id: str) -> dict | None:
     return model
 
 
-def db_create_ac_model(brand: str, name: str, kind: str,
-                       protocol: str | None, notes: str | None) -> dict:
+def db_create_ac_model(brand: str, name: str, notes: str | None) -> dict:
     now = iso(utcnow())
     with closing(_connect()) as con:
         base = _slugify_model_id(brand, name)
@@ -1025,15 +1014,14 @@ def db_create_ac_model(brand: str, name: str, kind: str,
             model_id, suffix = f"{base}-{suffix}", suffix + 1
         con.execute(
             "INSERT INTO ac_models (model_id, brand, name, kind, protocol,"
-            " notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-            (model_id, brand, name, kind,
-             protocol if kind == "protocol" else None, notes, now, now))
+            " notes, created_at, updated_at) VALUES (?,?,?,'raw',NULL,?,?,?)",
+            (model_id, brand, name, notes, now, now))
         con.commit()
     return db_ac_model(model_id)
 
 
 def db_update_ac_model(model_id: str, patch: dict) -> dict | None:
-    columns = [c for c in ("brand", "name", "protocol", "notes")
+    columns = [c for c in ("brand", "name", "notes")
                if patch.get(c) is not None]
     with closing(_connect()) as con:
         if not con.execute("SELECT 1 FROM ac_models WHERE model_id=?",
@@ -2171,15 +2159,12 @@ async def admin_sota_deploy(store_id: str, req: SotaDeployRequest,
 class AcModelCreate(BaseModel):
     brand: str = Field(..., min_length=1, max_length=64)
     name: str = Field(..., min_length=1, max_length=64)
-    kind: str = Field("protocol", pattern="^(protocol|raw)$")
-    protocol: str | None = Field(None, max_length=32)
     notes: str | None = Field(None, max_length=256)
 
 
 class AcModelPatch(BaseModel):
     brand: str | None = Field(None, min_length=1, max_length=64)
     name: str | None = Field(None, min_length=1, max_length=64)
-    protocol: str | None = Field(None, max_length=32)
     notes: str | None = Field(None, max_length=256)
 
 
@@ -2193,14 +2178,10 @@ async def admin_list_ac_models(request: Request) -> dict:
 @app.post("/api/v1/admin/ac/models")
 async def admin_create_ac_model(req: AcModelCreate, request: Request) -> dict:
     require_admin(request)
-    if req.kind == "protocol" and not (req.protocol or "").strip():
-        raise HTTPException(status_code=422,
-                            detail="protocol 방식 모델은 IR 프로토콜 이름이 필요합니다.")
     model = await asyncio.to_thread(
-        db_create_ac_model, req.brand.strip(), req.name.strip(), req.kind,
-        (req.protocol or "").strip() or None, req.notes)
-    log.info("AC model registered: %s (%s, kind=%s)",
-             model["model_id"], model["name"], model["kind"])
+        db_create_ac_model, req.brand.strip(), req.name.strip(), req.notes)
+    log.info("learned-remote entry registered: %s (%s)",
+             model["model_id"], model["name"])
     return {"ok": True, "model": model}
 
 
@@ -2335,23 +2316,23 @@ async def start_sota_deploy(hub: StoreHub, req: dict, actor: dict) -> str | None
     # the registry even if the client's cached catalog is stale.
     brand = (model or {}).get("brand") or req.get("brand")
     model_name = (model or {}).get("name") or req.get("model")
-    is_raw = bool(model and model["kind"] == "raw")
+    # Two deploys, and which one it is depends only on whether a remote was
+    # picked: with one, push its learned codes (the gateway flashes the IR
+    # image first if the device is still bare); with none, just put the IR
+    # image on so the device can be learned into at all.
     bundle = None
-    if is_raw:
+    if model_id:
         bundle = await asyncio.to_thread(db_ir_bundle, model_id)
         if not bundle:
             return "학습된 리모컨 코드가 없습니다. 먼저 IR 학습을 진행하세요."
-        protocol = RAW_PROTOCOL
-    else:
-        protocol = (model or {}).get("protocol") or req.get("protocol")
     # Remember what was asked for; the device row is stamped once the
     # gateway reports the deploy finished.
     hub.sota_target = {"dev_id": target_id, "brand": brand, "model": model_name,
-                       "model_id": model_id, "protocol": protocol}
-    payload = {"cmd": "DEPLOY_IRDATA" if is_raw else "DEPLOY_FIRMWARE",
+                       "model_id": model_id, "protocol": RAW_PROTOCOL}
+    payload = {"cmd": "DEPLOY_IRDATA" if bundle else "DEPLOY_FIRMWARE",
                "store_id": hub.store_id, "target_id": target_id,
                "brand": brand, "model": model_name,
-               "model_id": model_id, "protocol": protocol,
+               "model_id": model_id,
                "ts": iso(utcnow())}
     if bundle:
         payload["bundle"] = bundle
@@ -2360,11 +2341,12 @@ async def start_sota_deploy(hub: StoreHub, req: dict, actor: dict) -> str | None
         return "게이트웨이가 오프라인입니다. 배포할 수 없습니다."
     hub.sota = {"stage": "requested", "percent": 0, "model": model_name}
     detail = f"장비 업그레이드 요청: {brand or ''} {model_name or ''}".strip()
-    if is_raw:
+    if bundle:
         detail += f" (학습 코드 {len(bundle['slots'])}개)"
     await asyncio.to_thread(
         db_log_history, hub.store_id, "sota", "sota_requested", actor, target_id,
-        None, {"brand": brand, "model": model_name, "protocol": protocol},
+        None, {"brand": brand, "model": model_name,
+               "learned_slots": len(bundle["slots"]) if bundle else 0},
         detail)
     await manager.broadcast(hub, {
         "type": "sota_progress", "stage": "requested", "percent": 0,

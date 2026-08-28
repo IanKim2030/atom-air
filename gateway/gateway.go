@@ -632,17 +632,16 @@ func (s *Service) ackAC(ok bool, message string, state *protocol.ACCommand) {
 	s.cloud.SendJSON(msg)
 }
 
-// flashFirmware stages the protocol-named image, tells the device to flash it
-// and walks the prepare/serve/notify/flashing stages. Shared by the protocol
-// SOTA and the bare-device leg of an IR-data deploy. Returns false once a
-// failure has been reported.
-func (s *Service) flashFirmware(target uint8, model, proto string,
+// flashFirmware serves the IR-capable image, tells the device to flash it and
+// walks the prepare/serve/notify/flashing stages. There is one image: the
+// device replays learned timings, so nothing about it varies by AC brand.
+// Returns false once a failure has been reported.
+func (s *Service) flashFirmware(target uint8, model string,
 	report func(stage string, percent int, message string, ok bool)) bool {
 
-	report("prepare", 10, fmt.Sprintf("%s (%s) 펌웨어를 준비합니다.", model, proto), true)
+	report("prepare", 10, "IR 제어 펌웨어를 준비합니다.", true)
 
-	binary := filepath.Join(s.cfg.FirmwareDir,
-		fmt.Sprintf("atom_ac_%s.bin", strings.ToLower(proto)))
+	binary := filepath.Join(s.cfg.FirmwareDir, "atom_ac.bin")
 	info, err := os.Stat(binary)
 	if err != nil {
 		if !s.cfg.Simulate {
@@ -669,7 +668,7 @@ func (s *Service) flashFirmware(target uint8, model, proto string,
 		fmt.Sprintf("로컬 OTA 서버에서 배포 중 (%dKB) - %s", info.Size()/1024, url), true)
 
 	sent := s.mqtt.PublishOTA(target, map[string]any{
-		"cmd": "OTA", "url": url, "protocol": proto, "model": model, "size": info.Size(),
+		"cmd": "OTA", "url": url, "model": model, "size": info.Size(),
 	})
 	if !sent && !s.cfg.Simulate {
 		report("failed", 35, "MQTT 브로커에 연결되어 있지 않아 OTA를 지시할 수 없습니다.", false)
@@ -691,8 +690,7 @@ func (s *Service) runSOTA(cmd Command) {
 	if cmd.TargetID > 0 && cmd.TargetID < 256 {
 		target = uint8(cmd.TargetID)
 	}
-	model := firstNonEmpty(cmd.Model, cmd.ModelID, "unknown")
-	proto := firstNonEmpty(cmd.Protocol, "GENERIC")
+	model := firstNonEmpty(cmd.Model, cmd.ModelID, "IR 펌웨어")
 
 	report := func(stage string, percent int, message string, ok bool) {
 		s.cloud.SendJSON(map[string]any{
@@ -702,7 +700,7 @@ func (s *Service) runSOTA(cmd Command) {
 		slog.Info("SOTA", "stage", stage, "percent", percent, "msg", message)
 	}
 
-	if !s.flashFirmware(target, model, proto, report) {
+	if !s.flashFirmware(target, model, report) {
 		return
 	}
 
@@ -762,14 +760,14 @@ func (s *Service) runIRDeploy(cmd Command) {
 	}
 
 	// A device that has never reported IR-ready is still on the base image:
-	// give it the raw-capable universal firmware before the data file.
+	// give it the IR firmware before the data file.
 	s.mu.Lock()
 	ready := s.irReady[target]
 	s.mu.Unlock()
 	if !ready {
-		slog.Info("device not IR-ready; flashing raw-capable firmware first",
+		slog.Info("device not IR-ready; flashing the IR firmware first",
 			"dev", target)
-		if !s.flashFirmware(target, model, "RAW", report) {
+		if !s.flashFirmware(target, model, report) {
 			return
 		}
 		if s.cfg.Simulate {

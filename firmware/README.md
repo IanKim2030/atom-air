@@ -98,8 +98,9 @@ PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=\"StoreNet\" -DWIFI_PASS=\"secret\" -DMQTT_H
 
 ## Stage the AC image for SOTA
 
-The gateway serves `<data-dir>\firmware\atom_ac_<protocol>.bin` over HTTP :8080.
-Build once, stage under every protocol name:
+The gateway serves one image, `<data-dir>\firmware\atom_ac.bin`, over HTTP :8080.
+There is nothing brand-specific to stage — every device replays timings learned
+from the customer's own remote, so the same binary drives every air conditioner:
 
 ```bash
 pio run -e atom_ac
@@ -107,21 +108,23 @@ python stage_firmware.py                       # -> %ProgramData%\AtomAir\firmwa
 python stage_firmware.py --data-dir <dir>      # if the gateway runs with --data-dir
 ```
 
-Then pick the AC brand/model in the web UI (store dashboard or admin console →
-장비 업그레이드). The pipeline is: gateway MQTT OTA command → device saves the
-protocol to NVS → downloads the image over the LAN → flashes → reboots →
-reports `FLAG_IR_READY` → AC control frames start producing real IR bursts.
+Deploy it from the admin console → 장비 업그레이드. The pipeline is: gateway MQTT
+OTA command → device downloads the image over the LAN → flashes → reboots.
+Pushing a learned remote (`DEPLOY_IRDATA`) flashes this image first when the
+device is still on the base build, so one action covers a bare unit.
 
-Re-running SOTA with a different model re-stamps the protocol and re-flashes —
-that is how a unit is repointed at a different AC.
+`FLAG_IR_READY` follows the learned bundle, not the firmware: a device reports
+ready once `/irdata.json` is in SPIFFS, and AC control frames are dropped until
+then.
 
-## Raw IR: 학습 리모컨 (RAW protocol)
+## IR control: 학습 리모컨
 
-For ACs `IRac` does not cover, the admin console can register a **raw** model
-and learn its remote's signals. The same universal `atom_ac` image handles it:
+There is no brand or protocol database anywhere in the system. Every air
+conditioner is controlled by replaying signals captured from its own remote,
+which is why an obscure unit works exactly as well as a common one:
 
-- The NVS protocol sentinel `RAW` selects the replay path. The learned code
-  bundle arrives as `{"cmd":"IRDATA"}` on the OTA topic: the device downloads
+- The learned code bundle arrives as `{"cmd":"IRDATA"}` on the OTA topic: the
+  device downloads
   `ir_<model_id>.json` from the gateway's :8080 server, streams it into SPIFFS
   (`/irdata.json`), validates the header, then stamps NVS and acks — no reboot.
 - An AC frame is mapped to a slot key (`off`, `cool_18..30`, `heat_18..30`;
@@ -131,8 +134,9 @@ and learn its remote's signals. The same universal `atom_ac` image handles it:
   GND→GND) on the unit used for capture — transmit-only units need nothing.
   A `LEARN` command arms the receiver (LED purple); the next decoded frame is
   published up as raw timings and the receiver disarms.
-- `stage_firmware.py` also stages `atom_ac_raw.bin` so a bare device gets the
-  universal image flashed automatically before its first IRDATA push.
+- A bare device gets `atom_ac.bin` flashed automatically before its first
+  IRDATA push, so registering and learning a remote is the only thing an
+  installer has to do.
 
 ## Notes
 

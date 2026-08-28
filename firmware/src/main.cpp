@@ -10,19 +10,17 @@
 //   subscribes atom/{store}/learn/{dev_id}  JSON {"cmd":"LEARN","slot",...}
 //
 // Built two ways (see platformio.ini): atom_base has no IR library and never
-// raises FLAG_IR_READY; atom_ac adds IRremoteESP8266's IRac and reports ready
-// once an OTA command has stamped the AC protocol into NVS. The OTA handler
-// saves the protocol *before* flashing, so the freshly booted AC image knows
-// which remote to imitate.
+// raises FLAG_IR_READY; atom_ac adds IRremoteESP8266's IRsend and IRrecv, and
+// reports ready once a learned bundle is actually sitting in SPIFFS.
 //
-// Two IR control paths, chosen by the NVS protocol:
-//   * a library protocol name -> IRac generates the frame (sendIR);
-//   * "RAW" -> replay codes learned from the real remote. The learned bundle
-//     arrives as a JSON data file over the same OTA HTTP server (cmd IRDATA),
-//     lives in SPIFFS, and maps each full AC state ("off", "cool_24", ...) to
-//     a raw mark/space timing array — manufacturer-agnostic.
-// Learning: a LEARN command arms the (optional) IR receiver on IR_RX_PIN; the
-// next decoded frame goes up atom/{store}/ir/{dev} as raw timings.
+// One IR control path, and it is manufacturer-agnostic: replay the timings
+// captured from the customer's own remote. The learned bundle arrives as a
+// JSON data file over the same OTA HTTP server (cmd IRDATA), lives in SPIFFS,
+// and maps each full AC state ("off", "cool_24", ...) to a raw mark/space
+// timing array. There is no brand or protocol database on the device -- a
+// remote nobody has written a driver for works the same as a common one.
+// Learning: a LEARN command arms the IR receiver on IR_RX_PIN; the next
+// decoded frame goes up atom/{store}/ir/{dev} as raw timings.
 //
 // The temperature/humidity sensor on the Grove port is auto-detected at boot:
 // M5 ENV III (SHT30) and ENV IV (SHT40) over I2C, or a bare DHT22/DHT11 on
@@ -47,7 +45,6 @@
 
 #ifdef HAS_IR
 #include <SPIFFS.h>
-#include <IRac.h>
 #include <IRrecv.h>
 #include <IRsend.h>
 #include <IRutils.h>
@@ -80,8 +77,6 @@ static uint16_t seq = 0;
 static bool acOn = false;
 
 // Filled from NVS at boot; written by the OTA handler just before flashing.
-// acProtocol "RAW" means "replay learned codes from SPIFFS /irdata.json".
-static String acProtocol;
 static String acModel;
 static String acModelId;
 static bool irReady = false;
@@ -101,12 +96,11 @@ static bool mqttFromNvs = false;
 // The MQTT callback only records the OTA request; the download and flash run
 // from loop(), never from inside the network stack's callback.
 static volatile bool otaPending = false;
-static String otaUrl, otaProtocol, otaModel;
+static String otaUrl, otaModel;
 static long otaSize = -1;
 
 #ifdef HAS_IR
-static IRac irac(IR_TX_PIN);
-static IRsend irsendRaw(IR_TX_PIN);            // raw replay path
+static IRsend irsendRaw(IR_TX_PIN);            // learned-code replay (TX)
 static IRrecv irrecv(IR_RX_PIN, 1024, 50, true);  // learn capture (AC frames are long)
 
 // IRDATA download request, recorded by the callback, run from loop().
@@ -267,45 +261,10 @@ static void buildSensorPacket(uint8_t out[SENSOR_SIZE]) {
 }
 
 // ── AC control ──────────────────────────────────────────────────────────
+// There is no brand/protocol path any more: every device replays the timings
+// captured from the customer's own remote. One code path, and a remote nobody
+// has written a protocol driver for works exactly as well as a common one.
 #ifdef HAS_IR
-static stdAc::opmode_t toOpMode(uint8_t mode) {
-  switch (mode) {                       // AC_MODES in common/protocol.py
-    case 0: return stdAc::opmode_t::kCool;
-    case 1: return stdAc::opmode_t::kHeat;
-    case 2: return stdAc::opmode_t::kDry;
-    case 3: return stdAc::opmode_t::kFan;
-    default: return stdAc::opmode_t::kAuto;
-  }
-}
-
-static stdAc::fanspeed_t toFanSpeed(uint8_t fan) {
-  switch (fan) {                        // AC_FANS in common/protocol.py
-    case 1: return stdAc::fanspeed_t::kLow;
-    case 2: return stdAc::fanspeed_t::kMedium;
-    case 3: return stdAc::fanspeed_t::kHigh;
-    default: return stdAc::fanspeed_t::kAuto;
-  }
-}
-
-static void sendIR(uint8_t power, uint8_t mode, uint8_t temp, uint8_t fan) {
-  decode_type_t proto = strToDecodeType(acProtocol.c_str());
-  if (proto == decode_type_t::UNKNOWN || !IRac::isProtocolSupported(proto)) {
-    Serial.printf("[ir] protocol %s not supported by IRac, dropping command\n",
-                  acProtocol.c_str());
-    return;
-  }
-  irac.next.protocol = proto;
-  irac.next.model = 1;
-  irac.next.power = power != 0;
-  irac.next.mode = toOpMode(mode);
-  irac.next.celsius = true;
-  irac.next.degrees = temp;
-  irac.next.fanspeed = toFanSpeed(fan);
-  irac.sendAc();
-  Serial.printf("[ir] sent %s power=%d mode=%d temp=%d fan=%d\n",
-                acProtocol.c_str(), power, mode, temp, fan);
-}
-
 // ── raw replay (학습 리모컨) ────────────────────────────────────────────
 // An AC remote transmits its full state per keypress, so each learned code is
 // one state combination, keyed "off" / "cool_18".."cool_30" / "heat_18"...
@@ -481,18 +440,14 @@ static void handleAcFrame(const uint8_t *d, size_t len) {
 
 #ifdef HAS_IR
   if (irReady) {
-    if (acProtocol == "RAW") {
-      if (!sendRawSlot(power, mode, temp)) return;   // unlearned combo: skip
-    } else {
-      sendIR(power, mode, temp, fan);
-    }
+    if (!sendRawSlot(power, mode, temp)) return;   // unlearned combo: skip
     acOn = power != 0;
     blinkAck(feedback);
     return;
   }
 #endif
   (void)mode; (void)temp; (void)fan;
-  Serial.println("[ac] no IR-capable firmware/protocol yet — command ignored");
+  Serial.println("[ac] no learned remote yet — command ignored");
 }
 
 // ── OTA / IRDATA ────────────────────────────────────────────────────────
@@ -520,7 +475,6 @@ static void handleOtaCommand(const uint8_t *payload, size_t len) {
     return;
   }
   otaUrl = doc["url"] | "";
-  otaProtocol = doc["protocol"] | "";
   otaModel = doc["model"] | "";
   otaSize = doc["size"] | -1L;
   if (otaUrl.isEmpty()) {
@@ -635,11 +589,9 @@ static void performIrdata() {
   }
 
   prefs.begin("atomair", false);
-  prefs.putString("protocol", "RAW");
   prefs.putString("model", irdataModel);
   prefs.putString("model_id", irdataModelId);
   prefs.end();
-  acProtocol = "RAW";
   acModel = irdataModel;
   acModelId = irdataModelId;
   irReady = true;
@@ -653,14 +605,13 @@ static void performIrdata() {
 
 static void performOta() {
   otaPending = false;
-  Serial.printf("[ota] start <- %s (protocol=%s)\n", otaUrl.c_str(),
-                otaProtocol.c_str());
+  Serial.printf("[ota] start <- %s (%s)\n", otaUrl.c_str(),
+                otaModel.isEmpty() ? "IR image" : otaModel.c_str());
   led(CRGB::Blue);
 
-  // Stamp the target protocol first: the freshly flashed image reads it from
-  // NVS at boot, which is what turns FLAG_IR_READY on after the reboot.
+  // The model name is only a label for the UI; readiness comes from the
+  // learned bundle in SPIFFS, which this flash does not touch.
   prefs.begin("atomair", false);
-  prefs.putString("protocol", otaProtocol);
   prefs.putString("model", otaModel);
   prefs.end();
 
@@ -962,7 +913,6 @@ void setup() {
                     : "");
 
   prefs.begin("atomair", true);
-  acProtocol = prefs.getString("protocol", "");
   acModel = prefs.getString("model", "");
   acModelId = prefs.getString("model_id", "");
   wifiSsid = prefs.getString("wifi_ssid", "");
@@ -993,15 +943,13 @@ void setup() {
                   mqttFromNvs ? "NVS" : "config.h default");
 
 #ifdef HAS_IR
-  irac.next.protocol = decode_type_t::UNKNOWN;
   irsendRaw.begin();
   if (!SPIFFS.begin(true))   // format on first mount so IRDATA can land later
-    Serial.println("[boot] SPIFFS mount failed — raw IR replay unavailable");
-  // A RAW device is only ready when its learned bundle actually survived.
-  irReady = !acProtocol.isEmpty() &&
-            (acProtocol != "RAW" || SPIFFS.exists(IRDATA_PATH));
-  Serial.printf("[boot] atom_ac firmware, protocol=%s model=%s ir_ready=%d\n",
-                acProtocol.c_str(), acModel.c_str(), irReady);
+    Serial.println("[boot] SPIFFS mount failed — learned IR replay unavailable");
+  // Readiness is one question now: did a learned bundle survive the reboot?
+  irReady = SPIFFS.exists(IRDATA_PATH);
+  Serial.printf("[boot] atom_ac firmware, remote=%s ir_ready=%d\n",
+                acModel.isEmpty() ? "(none learned)" : acModel.c_str(), irReady);
 #else
   irReady = false;   // base image cannot transmit IR regardless of NVS
   Serial.println("[boot] atom_base firmware (sensor + OTA only)");
