@@ -602,6 +602,9 @@ function onMessage(msg) {
     case "sota_progress":
       onSotaProgress(msg);
       break;
+    case "device_removed":
+      removeDeviceCard(msg.dev_id);
+      break;
     case "device_order":
       (msg.order || []).forEach((id, idx) => {
         const d = st.devices.get(id);
@@ -849,11 +852,17 @@ function cardHtml(d) {
       </button>
     </div>
     ${S.me?.role === "admin" ? `
-    <button onclick="openSotaModal(${d.dev_id})"
-            class="touch-btn w-full py-2 bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold">
-      <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i>
-      <span>${d.model ? "에어컨 모델 변경 (재배포)" : "에어컨 제조사·모델 선택"}</span>
-    </button>` : ""}
+    <div class="flex gap-1.5">
+      <button onclick="openSotaModal(${d.dev_id})"
+              class="touch-btn flex-1 min-w-0 py-2 bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold">
+        <i data-lucide="upload-cloud" class="w-3.5 h-3.5 shrink-0"></i>
+        <span class="truncate">${d.model ? "에어컨 모델 변경 (재배포)" : "에어컨 제조사·모델 선택"}</span>
+      </button>
+      <button onclick="deleteDevice(${d.dev_id})" title="장비 카드 삭제 (관리자 전용)"
+              class="touch-btn shrink-0 px-3 py-2 bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-xl flex items-center justify-center">
+        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>` : ""}
   </div>`;
 }
 
@@ -957,6 +966,34 @@ function devControl(devId, fields) {
   const blocked = rawBlockMessage(S.store.devices.get(devId), fields);
   if (blocked) { toast(blocked); return; }
   sendWs({ type: "ac_control", target_id: devId, ...fields });
+}
+
+// ── card removal (admin only) ────────────────────────────────────────
+// Retiring a unit: the server refuses while it is still publishing, because a
+// live device re-registers on its next packet and the card would just blink.
+function removeDeviceCard(devId) {
+  if (!S.store.devices.delete(devId)) return;
+  if (S.cardCharts[devId]) { S.cardCharts[devId].destroy(); delete S.cardCharts[devId]; }
+  delete S.cardPanels[devId];           // renderGrid drops the node and its sig
+  renderAll();
+}
+
+async function deleteDevice(devId) {
+  const name = S.store.devices.get(devId)?.name || `디바이스 ${devId}`;
+  const warn = `'${name}' 카드를 삭제할까요?
+
+장비 등록 정보와 저장된 에어컨 설정이 함께 삭제됩니다.
+온·습도 통계 기록은 그대로 남고, 같은 장비가 다시 패킷을 보내면 새 카드로 등록됩니다.`;
+  if (!confirm(warn)) return;
+  try {
+    await api(`/api/v1/stores/${encodeURIComponent(S.current)}/devices/${devId}`,
+              { method: "DELETE" });
+  } catch (err) {
+    if (err.message !== "unauthorized") toast(err.message);
+    return;
+  }
+  removeDeviceCard(devId);   // the broadcast repeats this; both are idempotent
+  toast(`'${name}' 카드를 삭제했습니다.`);
 }
 
 // ── drag-reorder: grab a card by its grip handle and drop it in place.

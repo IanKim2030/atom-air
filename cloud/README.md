@@ -76,6 +76,7 @@ reachable.
 | `POST` | `/api/v1/stores/{id}/settings` | store-wide prefs (AI auto-temp), audited |
 | `GET` | `/api/v1/admin/history` | audit trail across all stores |
 | `GET`·`POST` | `/api/v1/admin/owners` | owner (점주) accounts — one login, many stores |
+| `DELETE` | `/api/v1/stores/{id}/devices/{dev_id}` | admin: retire a device's card (409 while it is still publishing) |
 | `GET` | `/api/v1/stores/{id}/stats?minutes=` | 1-minute statistics |
 | `GET` | `/api/v1/stores/{id}/status` | gateway online, viewers, AC state, licence, SOTA progress |
 | `GET` | `/api/v1/ac/models` | AC brand/model catalog for the SOTA popup |

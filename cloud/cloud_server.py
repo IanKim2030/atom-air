@@ -821,6 +821,22 @@ def db_register_device(store_id: str, dev_id: int) -> dict:
     return dict(row)
 
 
+def db_delete_device(store_id: str, dev_id: int) -> bool:
+    """Drop a device's registry row and its saved AC state.
+
+    minute_stats is deliberately left alone: those readings are the store's
+    environment record for the year, not a property of the card. If the same
+    dev_id ever registers again it simply picks its own history back up.
+    """
+    with closing(_connect()) as con:
+        cur = con.execute("DELETE FROM devices WHERE store_id=? AND dev_id=?",
+                          (store_id, dev_id))
+        con.execute("DELETE FROM ac_settings WHERE store_id=? AND dev_id=?",
+                    (store_id, dev_id))
+        con.commit()
+    return cur.rowcount > 0
+
+
 def db_update_device(store_id: str, dev_id: int, patch: dict) -> dict | None:
     """Set any of name / location / brand / model / model_id / protocol."""
     columns = [c for c in ("name", "location", "brand", "model", "model_id",
@@ -1724,6 +1740,48 @@ async def update_device(store_id: str, dev_id: int, patch: DevicePatch,
             changed, "디바이스 정보 변경: " + ", ".join(changed))
     await manager.broadcast(hub, {"type": "device_meta", "device": row})
     return {"device": row}
+
+
+@app.delete("/api/v1/stores/{store_id}/devices/{dev_id}")
+async def delete_device(store_id: str, dev_id: int, request: Request) -> dict:
+    """Remove a retired unit's card from the dashboard. HQ admin only.
+
+    Store staff can rename and reorder cards but not delete them: the card of a
+    unit that is merely unplugged for the afternoon looks exactly like the card
+    of one that has been decommissioned, and only HQ knows which it is.
+    """
+    sess = require_admin(request)
+    hub = manager.get(store_id)
+    previous = dict(hub.devices.get(dev_id) or {})
+
+    # A unit still publishing would re-register on its very next packet, so
+    # deleting it now just makes the card blink. Say so instead of pretending.
+    latest = hub.latest.get(dev_id)
+    if latest and int(time.time() * 1000) - latest["ts"] < DEVICE_STALE_SECONDS * 1000:
+        raise HTTPException(
+            status_code=409,
+            detail="아직 데이터를 보내고 있는 장비입니다. 전원을 내리거나 게이트웨이에서 "
+                   "분리한 뒤 삭제하세요 — 살아 있으면 곧바로 다시 등록됩니다.")
+
+    removed = await asyncio.to_thread(db_delete_device, store_id, dev_id)
+    if not removed and dev_id not in hub.known_device_ids():
+        raise HTTPException(status_code=404, detail="등록되지 않은 장비입니다.")
+
+    # known_device_ids() unions three dicts, so a card survives until the
+    # dev_id is gone from every one of them.
+    hub.devices.pop(dev_id, None)
+    hub.latest.pop(dev_id, None)
+    hub.ac_states.pop(dev_id, None)
+    hub.last_seen_written.pop(dev_id, None)
+
+    await asyncio.to_thread(
+        db_log_history, store_id, "device_meta", "device_delete", actor_of(sess),
+        dev_id, {"name": previous.get("name"), "model": previous.get("model")},
+        None, f"장비 {dev_id} 카드 삭제")
+    await manager.broadcast(hub, {"type": "device_removed", "dev_id": dev_id})
+    log.info("[%s] device %d deleted by admin %s", store_id, dev_id,
+             actor_of(sess)["id"])
+    return {"ok": True, "dev_id": dev_id}
 
 
 async def hydrate_hub(hub: StoreHub) -> None:
