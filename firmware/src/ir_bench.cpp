@@ -10,11 +10,14 @@
 //   pio run -e atom_irbench -t upload
 //   pio device monitor
 //
-// Two things it deliberately does not do. It resends by protocol+value, so it
-// handles NEC-style remotes (TV, fan, light) and not air conditioners, whose
-// full-state frames decode as UNKNOWN — that is exactly why the store firmware
-// replays raw timings instead. And it drives the RGB LED with neopixelWrite()
-// rather than FastLED, so it cannot fight IRremoteESP8266 over an RMT timer.
+// The resend is a loopback check, not a control feature: firing a decoded code
+// back proves the transmit path and the LED both work, on a remote simple
+// enough to decode (NEC-style — TV, fan, light). Air conditioner frames decode
+// as UNKNOWN and are not resendable this way, which is expected here and is why
+// the store firmware replays raw timings instead.
+//
+// The RGB LED is driven with neopixelWrite() rather than FastLED so nothing
+// contends with IRremoteESP8266 for an RMT timer.
 
 #include <Arduino.h>
 #include <IRremoteESP8266.h>

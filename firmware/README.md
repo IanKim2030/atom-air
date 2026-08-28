@@ -42,12 +42,14 @@ pio run -e atom_irbench -t upload
 pio device monitor
 ```
 
-It resends by protocol + value, so it handles NEC-style remotes (TV, fan, light)
-and **not** air conditioners — their full-state frames decode as `UNKNOWN` and
-cannot be reconstructed from a 32-bit value. That limitation is precisely why
-the store firmware replays raw timings instead. The LED is driven with
-`neopixelWrite()` rather than FastLED so that nothing contends with
-IRremoteESP8266 for an RMT timer.
+The resend is a **loopback check**, not a control feature — firing a decoded
+code back is how you confirm the transmit path works. It needs a remote simple
+enough to decode (NEC-style: TV, fan, light); air conditioner frames come back
+`UNKNOWN` and are not resendable this way, which is expected, and is why the
+store firmware replays raw timings instead. Use the dashboard's `IR 수신 대기`
+when you need to see an AC frame. The LED is driven with `neopixelWrite()`
+rather than FastLED so that nothing contends with IRremoteESP8266 for an RMT
+timer.
 
 ## Hardware
 
