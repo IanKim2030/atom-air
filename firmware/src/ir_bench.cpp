@@ -31,7 +31,11 @@ const uint16_t SEND_PIN = 12; // ATOM Lite 내장 IR 송신 핀 (G12)
 const uint8_t  BTN_PIN  = 39; // ATOM Lite 전면 버튼 (G39)
 const uint8_t  LED_PIN  = 27; // ATOM Lite 내장 RGB LED (G27)
 
-IRrecv irrecv(RECV_PIN);
+// 1024 timings, not the library's default 100: an air conditioner frame runs
+// 200 and up, and a frame that overflows the buffer is truncated, fails to
+// decode, and arrives as UNKNOWN. 50ms (default 15) closes the gap between an
+// AC frame's two halves so they arrive as one capture.
+IRrecv irrecv(RECV_PIN, 1024, 50, true);
 IRsend irsend(SEND_PIN);
 decode_results results;
 
@@ -43,6 +47,44 @@ uint16_t lastBits = 0;
 // LED 색상 제어 함수 (FastLED 충돌 방지용 순수 ESP32 함수)
 void setLedColor(uint8_t r, uint8_t g, uint8_t b) {
   neopixelWrite(LED_PIN, r, g, b);
+}
+
+// Prints everything the decoder produced. value/address/command and state[]
+// share one union — they are mutually exclusive — so which half is real depends
+// on the protocol, and printing the wrong one prints neighbouring bytes.
+void dumpResult(const decode_results *r) {
+  Serial.println("\n[신호 수신]");
+  Serial.print(" - 프로토콜 : "); Serial.println(typeToString(r->decode_type, r->repeat));
+  Serial.print(" - 비트 수  : "); Serial.println(r->bits);
+  if (r->overflow)
+    Serial.println(" - !! 버퍼 넘침: 프레임이 잘렸습니다 (버퍼를 더 키우세요)");
+  if (r->repeat)
+    Serial.println(" - 반복 코드 (버튼을 누르고 있는 중)");
+
+  if (hasACState(r->decode_type)) {
+    // 에어컨류: 데이터가 state[] 바이트 배열에 담깁니다. 이때 address/command는
+    // 같은 메모리라 의미가 없습니다.
+    Serial.print(" - STATE    : 0x"); Serial.println(resultToHexidecimal(r));
+    Serial.println(" - (에어컨 프레임: 채널/커맨드 필드 없음, 상태 전체가 바이트열)");
+  } else {
+    Serial.print(" - HEX 코드 : 0x"); serialPrintUint64(r->value, HEX); Serial.println();
+    Serial.print(" - 채널(주소): 0x"); Serial.println(r->address, HEX);
+    Serial.print(" - 커맨드   : 0x"); Serial.println(r->command, HEX);
+  }
+
+  // The timings themselves, twelve per line so mark/space pairs stay in
+  // columns: header burst first, then the bit stream.
+  uint16_t len = getCorrectedRawLength(r);
+  uint16_t *raw = resultToRawArray(r);
+  uint32_t total = 0;
+  for (uint16_t i = 0; i < len; i++) total += raw[i];
+  Serial.printf(" - RAW      : %u개, %lu us\n", len, (unsigned long)total);
+  for (uint16_t i = 0; i < len; i++) {
+    if (i % 12 == 0) Serial.printf("   %4u: ", i);
+    Serial.printf("%u%s", raw[i], (i + 1 == len) ? "\n" : ",");
+    if ((i + 1) % 12 == 0 && i + 1 != len) Serial.println();
+  }
+  delete[] raw;
 }
 
 void setup() {
@@ -64,48 +106,54 @@ void setup() {
 }
 
 void loop() {
-  // 1. IR 신호 수신
+  // 1. IR 신호 수신 — 무엇이 잡히든 전부 출력합니다. 예전에는 value가 0이면
+  //    통째로 건너뛰었는데, 에어컨은 value가 항상 0이라 화면에 아무것도 남지
+  //    않았습니다.
   if (irrecv.decode(&results)) {
-    // 유효한 신호인 경우만 저장 (0xFFFFFFFF 반복 신호 제외)
-    if (results.value != 0xFFFFFFFFFFFFFFFF && results.value != 0) {
+    dumpResult(&results);
+    setLedColor(0, 50, 0); // 수신 성공: 초록색
+
+    // 재송신은 protocol+value 경로라 value가 있는 리모컨에만 해당합니다.
+    if (results.value != 0xFFFFFFFFFFFFFFFF && results.value != 0 &&
+        !hasACState(results.decode_type)) {
       lastProtocol = results.decode_type;
       lastValue = results.value;
       lastBits = results.bits;
-
-      setLedColor(0, 50, 0); // 수신 성공: 초록색
-
-      Serial.println("\n[📡 신호 학습 완료!]");
-      Serial.print(" - 프로토콜: "); Serial.println(typeToString(lastProtocol));
-      Serial.print(" - HEX 코드: 0x"); serialPrintUint64(lastValue, HEX); Serial.println();
-      Serial.print(" - 비트 수 : "); Serial.println(lastBits);
       Serial.println(">> ATOM 버튼을 누르면 이 신호를 발사합니다.");
-
-      delay(300);
-      setLedColor(0, 0, 50); // 다시 파란색으로 복귀
+    } else {
+      Serial.println(">> 재송신 불가 (protocol+value로 복원되지 않는 신호). "
+                     "위 RAW 값이 이 리모컨의 실제 데이터입니다.");
     }
 
+    delay(300);
+    setLedColor(0, 0, 50); // 다시 파란색으로 복귀
     irrecv.resume(); // 다음 신호 수신 대기
   }
 
   // 2. ATOM Lite 전면 버튼 눌림 감지 -> IR 송신
   if (digitalRead(BTN_PIN) == LOW) {
     delay(50); // 디바운스
-    if (digitalRead(BTN_PIN) == LOW && lastValue != 0) {
-      setLedColor(50, 0, 0); // 송신 중: 빨간색
+    if (digitalRead(BTN_PIN) == LOW) {
+      if (lastValue == 0) {
+        Serial.println("\n[송신할 신호가 없습니다 — 먼저 리모컨을 수신하세요]");
+      } else {
+        setLedColor(50, 0, 0); // 송신 중: 빨간색
 
-      Serial.println("\n[🚀 IR 신호 송신 중...]");
+        Serial.println("\n[🚀 IR 신호 송신 중...]");
 
-      // 송신 중에는 수신기를 잠시 중단하여 충돌 방지
-      irrecv.pause();
+        // 송신 중에는 수신기를 잠시 중단하여 충돌 방지
+        irrecv.pause();
 
-      // 저장된 프로토콜로 신호 발사
-      irsend.send(lastProtocol, lastValue, lastBits);
+        // 저장된 프로토콜로 신호 발사
+        bool sent = irsend.send(lastProtocol, lastValue, lastBits);
 
-      delay(100);
-      irrecv.resume(); // 송신 완료 후 수신 재개
+        delay(100);
+        irrecv.resume(); // 송신 완료 후 수신 재개
 
-      setLedColor(0, 0, 50); // 대기 (파란색)
-      Serial.println("[✔ 송신 완료!]");
+        setLedColor(0, 0, 50); // 대기 (파란색)
+        Serial.println(sent ? "[✔ 송신 완료!]"
+                            : "[✖ 이 프로토콜은 send()가 지원하지 않습니다]");
+      }
     }
     while (digitalRead(BTN_PIN) == LOW); // 버튼 뗄 때까지 대기
   }
