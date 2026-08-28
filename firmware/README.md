@@ -46,9 +46,8 @@ what makes the gateway's SOTA `verify` stage pass.
 
 ## First flash (USB)
 
-1. Edit [`include/config.h`](include/config.h): the store PC's LAN IP
-   (`MQTT_HOST`), `STORE_ID`, and a unique `DEVICE_ID` per unit. For flashing
-   several units, override per run instead:
+1. Edit [`include/config.h`](include/config.h): `STORE_ID`, and a unique
+   `DEVICE_ID` per unit. For flashing several units, override per run instead:
    `PLATFORMIO_BUILD_FLAGS="-DDEVICE_ID=2" pio run -e atom_base -t upload`
 2. Plug the ATOM Lite in and:
 
@@ -58,31 +57,44 @@ pio run -e atom_base -t upload
 pio device monitor          # watch it join Wi-Fi and MQTT
 ```
 
-3. Give it Wi-Fi over the serial monitor (see below). `WIFI_SSID`/`WIFI_PASS`
-   ship blank on purpose, so a fresh unit prints
-   `[wifi] not provisioned -- run: wifi <ssid> <password>` every 5 s until you do.
+3. Give it Wi-Fi and the gateway address over the serial monitor (see below).
+   `WIFI_SSID`, `WIFI_PASS` and `MQTT_HOST` all ship blank on purpose, so a
+   fresh unit prints `[wifi] not provisioned -- run: wifi <ssid> <password>`,
+   then `[mqtt] gateway address not set -- run: mqtt <host> [port]`, every 5 s
+   until you answer both.
 
 The device shows up on the dashboard as soon as its first packet reaches the
 gateway (auto-registration).
 
-## Wi-Fi provisioning (serial)
+## Network provisioning (serial)
 
-Credentials live in NVS, so re-pointing a unit at a different network needs a
-USB cable — not a rebuild or a reflash. Type these into `pio device monitor`:
+Wi-Fi credentials and the gateway address live in NVS, so re-pointing a unit at
+a different network or a replacement store PC needs a USB cable — not a rebuild
+or a reflash. Type these into `pio device monitor`:
 
 | command | effect |
 |---|---|
 | `wifi <ssid> <password>` | save to NVS and reboot. Use `"quotes"` for values with spaces |
 | `wifi?` | print SSID, where it came from (NVS / config.h), link status and IP |
 | `wifi reset` | drop the NVS credentials and reboot onto the `config.h` defaults |
+| `mqtt <host> [port]` | save the store PC's LAN IP to NVS and reboot. Port defaults to 1883 |
+| `mqtt?` | print host, port, source (NVS / config.h) and broker link state |
+| `mqtt reset` | drop the NVS address and reboot onto the `config.h` default |
 
-NVS wins over `config.h` whenever it holds an SSID. The connect loop keeps
-polling serial, so a unit stuck on a wrong password still accepts a corrected
-`wifi ...` command instead of needing a reflash.
+NVS wins over `config.h` whenever it holds a value. Both waits keep polling
+serial — a unit stuck on a wrong password, or pointed at a store PC that has
+since changed IP, still accepts a corrected command instead of a reflash. The
+difference is where they park: no Wi-Fi blocks in `ensureWifi()`, while a
+missing broker address just fails `ensureMqtt()` every 2 s, since the sensor
+loop has nothing to do without a gateway anyway.
 
-Never commit real credentials to `config.h`. For a batch flash, pass them as
-build flags instead:
-`PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=\"StoreNet\" -DWIFI_PASS=\"secret\"' pio run -e atom_base -t upload`
+Never commit real credentials or a site's LAN address to `config.h`. For a
+batch flash, pass them as build flags instead:
+
+```bash
+PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=\"StoreNet\" -DWIFI_PASS=\"secret\" -DMQTT_HOST=\"192.168.0.20\"' \
+  pio run -e atom_base -t upload
+```
 
 ## Stage the AC image for SOTA
 

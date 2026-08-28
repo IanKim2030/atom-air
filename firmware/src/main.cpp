@@ -91,6 +91,13 @@ static String wifiSsid;
 static String wifiPass;
 static bool wifiFromNvs = false;
 
+// Gateway (MQTT broker) address, same rule. mqttHost is handed to PubSubClient
+// as a bare pointer, so it must not be reassigned after setup() — every
+// provisioning command reboots instead of editing it in place.
+static String mqttHost;
+static uint16_t mqttPort = MQTT_PORT;
+static bool mqttFromNvs = false;
+
 // The MQTT callback only records the OTA request; the download and flash run
 // from loop(), never from inside the network stack's callback.
 static volatile bool otaPending = false;
@@ -692,11 +699,14 @@ static void performOta() {
 }
 
 // ── serial provisioning ─────────────────────────────────────────────────
-// WiFi credentials live in NVS so a technician can re-point a unit at a new
-// network over USB, without rebuilding or reflashing the image:
+// Network settings live in NVS so a technician can re-point a unit at a new
+// network or a new store PC over USB, without rebuilding or reflashing:
 //   wifi <ssid> <password>   save to NVS and reboot ("quotes" for spaces)
 //   wifi?                    show ssid / source / status (password masked)
 //   wifi reset               drop the NVS credentials, back to config.h
+//   mqtt <host> [port]       save the gateway address to NVS and reboot
+//   mqtt?                    show host / port / source / link state
+//   mqtt reset               drop the NVS address, back to config.h
 static String takeToken(String &line) {
   line.trim();
   if (line.startsWith("\"")) {
@@ -754,6 +764,49 @@ static void handleSerialLine(String line) {
     delay(200);
     ESP.restart();
   }
+
+  if (line == "mqtt?") {
+    Serial.printf("[mqtt] host=%s port=%u source=%s status=%s\n",
+                  mqttHost.isEmpty() ? "(unset)" : mqttHost.c_str(), mqttPort,
+                  mqttFromNvs ? "NVS" : "config.h",
+                  mqtt.connected() ? "connected" : "disconnected");
+    return;
+  }
+  if (line == "mqtt reset") {
+    prefs.begin("atomair", false);
+    prefs.remove("mqtt_host");
+    prefs.remove("mqtt_port");
+    prefs.end();
+    Serial.println("[mqtt] NVS address cleared -- rebooting to config.h defaults");
+    delay(200);
+    ESP.restart();
+  }
+  if (line.startsWith("mqtt ")) {
+    String rest = line.substring(5);
+    String host = takeToken(rest);
+    String portTok = takeToken(rest);
+    uint16_t port = MQTT_PORT;   // the port is optional; brokers rarely move
+    if (!portTok.isEmpty()) {
+      long parsed = portTok.toInt();
+      if (parsed < 1 || parsed > 65535) {
+        Serial.printf("[mqtt] bad port: %s\n", portTok.c_str());
+        return;
+      }
+      port = (uint16_t)parsed;
+    }
+    if (host.isEmpty()) {
+      Serial.println("[mqtt] usage: mqtt <host> [port]   (host = store PC's LAN IP)");
+      return;
+    }
+    prefs.begin("atomair", false);
+    prefs.putString("mqtt_host", host);
+    prefs.putUShort("mqtt_port", port);
+    prefs.end();
+    Serial.printf("[mqtt] saved %s:%u to NVS -- rebooting\n", host.c_str(), port);
+    delay(200);
+    ESP.restart();
+  }
+
   Serial.printf("[serial] unknown command: %s\n", line.c_str());
 }
 
@@ -786,6 +839,18 @@ static void onMqttMessage(char *topic, uint8_t *payload, unsigned int len) {
 static bool ensureMqtt() {
   if (mqtt.connected()) return true;
   led(CRGB::Yellow);
+  if (mqttHost.isEmpty()) {
+    // Same deal as Wi-Fi: config.h ships blank so no LAN address reaches git.
+    // loop() re-enters every 2 s and pollSerial() runs ahead of us, so nagging
+    // at a slower cadence is enough to keep the console usable.
+    static uint32_t lastPrompt = 0;
+    uint32_t now = millis();
+    if (lastPrompt == 0 || now - lastPrompt >= 5000) {
+      lastPrompt = now;
+      Serial.println("[mqtt] gateway address not set -- run: mqtt <host> [port]");
+    }
+    return false;
+  }
   char clientId[48];
   snprintf(clientId, sizeof(clientId), "atom-%s-%d-%04X", STORE_ID, DEVICE_ID,
            (uint16_t)(ESP.getEfuseMac() & 0xFFFF));
@@ -795,8 +860,8 @@ static bool ensureMqtt() {
 #ifdef HAS_IR
   mqtt.subscribe(topicLearn, 1);
 #endif
-  Serial.printf("[mqtt] connected to %s:%d as %s\n", MQTT_HOST, MQTT_PORT,
-                clientId);
+  Serial.printf("[mqtt] connected to %s:%u (%s) as %s\n", mqttHost.c_str(),
+                mqttPort, mqttFromNvs ? "NVS" : "config.h", clientId);
   return true;
 }
 
@@ -855,6 +920,8 @@ void setup() {
   acModelId = prefs.getString("model_id", "");
   wifiSsid = prefs.getString("wifi_ssid", "");
   wifiPass = prefs.getString("wifi_pass", "");
+  mqttHost = prefs.getString("mqtt_host", "");
+  mqttPort = prefs.getUShort("mqtt_port", MQTT_PORT);
   prefs.end();
   wifiFromNvs = !wifiSsid.isEmpty();
   if (!wifiFromNvs) {
@@ -866,6 +933,17 @@ void setup() {
   else
     Serial.printf("[boot] wifi ssid=%s (%s)\n", wifiSsid.c_str(),
                   wifiFromNvs ? "NVS" : "config.h default");
+
+  mqttFromNvs = !mqttHost.isEmpty();
+  if (!mqttFromNvs) {
+    mqttHost = MQTT_HOST;
+    mqttPort = MQTT_PORT;
+  }
+  if (mqttHost.isEmpty())
+    Serial.println("[boot] mqtt: gateway address not set -- run: mqtt <host> [port]");
+  else
+    Serial.printf("[boot] mqtt %s:%u (%s)\n", mqttHost.c_str(), mqttPort,
+                  mqttFromNvs ? "NVS" : "config.h default");
 
 #ifdef HAS_IR
   irac.next.protocol = decode_type_t::UNKNOWN;
@@ -884,7 +962,9 @@ void setup() {
   Serial.printf("[boot] store=%s dev=%d -> %s\n", STORE_ID, DEVICE_ID,
                 topicSensor);
 
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  // Safe to hand over the String's buffer: mqttHost is final by now, and a
+  // later `mqtt ...` command reboots rather than reassigning it.
+  if (!mqttHost.isEmpty()) mqtt.setServer(mqttHost.c_str(), mqttPort);
   mqtt.setCallback(onMqttMessage);
 #ifdef HAS_IR
   mqtt.setBufferSize(8192);   // a learned AC frame is ~600 timings of JSON

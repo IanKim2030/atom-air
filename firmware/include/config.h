@@ -17,9 +17,11 @@
 #define WIFI_PASS ""
 #endif
 
-// The store management PC running Mosquitto + the gateway.
+// The store management PC running Mosquitto + the gateway. Blank for the same
+// reason as the Wi-Fi block — a LAN address is per-site, not per-repo. Set it
+// over serial with `mqtt <host> [port]`, or with -DMQTT_HOST=... at build time.
 #ifndef MQTT_HOST
-#define MQTT_HOST "192.168.123.113"
+#define MQTT_HOST ""
 #endif
 #ifndef MQTT_PORT
 #define MQTT_PORT 1883
