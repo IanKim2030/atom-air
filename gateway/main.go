@@ -82,7 +82,8 @@ func parseConfig(args []string) (Config, error) {
 	var c Config
 	var licenseIntervalSec float64
 
-	fs.StringVar(&c.StoreID, "store-id", envOr("ATOM_STORE_ID", "S001"), "store identifier")
+	fs.StringVar(&c.StoreID, "store-id", envOr("ATOM_STORE_ID", ""),
+		"store identifier; leave empty to let the cloud resolve it from --token")
 	fs.StringVar(&c.CloudWS, "cloud-ws", envOr("ATOM_CLOUD_WS", "ws://127.0.0.1:8000"),
 		"cloud WebSocket base URL")
 	fs.StringVar(&c.CloudHTTP, "cloud-http", envOr("ATOM_CLOUD_HTTP", "http://127.0.0.1:8000"),

@@ -72,12 +72,31 @@ for real rather than by simulation. Put a `.bin` in
 `<data-dir>\firmware\atom_ac_<protocol>.bin` first; without `--simulate` the
 gateway fails the deploy loudly rather than inventing a stub.
 
+## Which store am I?
+
+The token is the identity. Each store has its own `gateway_token` in the cloud
+(admin console → 매장 정보 수정 → 게이트웨이 토큰), and the gateway asks
+`GET /api/v1/gateway/identify` which store its token belongs to, so a technician
+configures one value instead of two.
+
+Resolution order, highest first:
+
+1. `--store-id`, when given — an override, and it must agree with the token or
+   the cloud refuses the socket
+2. the id cached in `store_license_config.json` from a previous run
+3. the cloud
+
+Step 2 is what keeps a store running through a cloud outage: a gateway that has
+resolved its id once will start offline and collect into the local database, the
+same reason the licence grace period exists. A first-ever start with no cache
+does need the cloud, and retries with backoff until it answers.
+
 ## Install as a Windows service
 
 From an **Administrator** prompt:
 
 ```
-atomair-gateway.exe install --store-id S001 ^
+atomair-gateway.exe install ^
     --cloud-ws wss://cloud.example.com ^
     --cloud-http https://cloud.example.com ^
     --token <your-gateway-token> ^
@@ -145,9 +164,9 @@ next successful connect, so a cloud outage loses nothing.
 
 | flag | default | |
 |---|---|---|
-| `--store-id` | `S001` | |
+| `--store-id` | *(empty)* | optional — the cloud resolves it from `--token` |
 | `--cloud-ws` / `--cloud-http` | `127.0.0.1:8000` | |
-| `--token` | `dev-gateway-token` | **change before deploying** |
+| `--token` | `dev-gateway-token` | this store's gateway token; **change before deploying** |
 | `--mqtt-host` / `--mqtt-port` | `127.0.0.1:1883` | Mosquitto |
 | `--data-dir` | `%ProgramData%\AtomAir` | |
 | `--ota-host` | `auto` | detects the LAN IP the Atom devices must reach |

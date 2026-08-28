@@ -110,6 +110,15 @@ func NewService(cfg Config) *Service {
 
 // Run blocks until ctx is cancelled, then shuts everything down cleanly.
 func (s *Service) Run(ctx context.Context) error {
+	// Everything downstream is addressed by store: the MQTT topics, the licence
+	// check, the cloud socket. So this has to settle before anything starts,
+	// and with no --store-id and no cached id it blocks until the cloud answers.
+	storeID, err := resolveStoreID(ctx, s.cfg)
+	if err != nil {
+		return fmt.Errorf("resolve store id: %w", err)
+	}
+	s.cfg.StoreID = storeID
+
 	store, err := OpenStore(s.cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("open local store: %w", err)

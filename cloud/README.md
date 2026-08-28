@@ -63,13 +63,16 @@ reachable.
 | `GET` | `/` | the hybrid web UI — needs a session, else redirects to `/login` |
 | `GET` | `/login` · `/admin/login` · `/admin` | login pages + admin console |
 | `WS` | `/ws/live?store_id=` | browser channel (session cookie required) |
-| `WS` | `/ws/gateway/{store_id}?token=` | store gateway channel |
+| `WS` | `/ws/gateway?token=` | store gateway channel — the token says which store |
+| `WS` | `/ws/gateway/{store_id}?token=` | same, addressed explicitly; the token must match the store |
+| `GET` | `/api/v1/gateway/identify?token=` | which store is this gateway? (token + IP allowlist) |
 | `POST` | `/api/v1/auth/login` · `/api/v1/auth/admin/login` · `/api/v1/auth/logout` | session management |
 | `GET` | `/api/v1/auth/me` | who am I (role + store) |
 | `POST` | `/api/v1/store/authorize` | daily licence check + dynamic grace period |
 | `GET` | `/api/v1/admin/stores` | admin: every store + licence, gateway, device count |
 | `POST` | `/api/v1/admin/stores` | admin: register a store (id, name, password, terms) |
 | `POST` | `/api/v1/admin/stores/{id}/password` | admin: reset a store's web password |
+| `POST` | `/api/v1/admin/stores/{id}/gateway-token` | admin: reissue a store's gateway token |
 | `POST` | `/api/v1/admin/stores/{id}/sota` | admin: kick a firmware deploy over the gateway socket |
 | `POST` | `/api/v1/stores/{id}/license` | admin: set state / grace days / expiry / plan / owner |
 | `GET` | `/api/v1/stores/{id}/history` | audit trail for one store (`?category=&limit=`) |

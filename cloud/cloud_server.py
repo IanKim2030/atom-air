@@ -65,6 +65,9 @@ log = logging.getLogger("cloud")
 DB_PATH = Path(os.environ.get("ATOM_CLOUD_DB", BASE_DIR / "cloud.db"))
 TEMPLATES_DIR = BASE_DIR / "templates"
 INDEX_HTML = TEMPLATES_DIR / "index.html"
+# Only used to seed stores that predate per-store tokens, so an existing
+# deployment keeps working across the upgrade. Gateways authenticate with the
+# store's own stores.gateway_token, not with this.
 GATEWAY_TOKEN = os.environ.get("ATOM_GATEWAY_TOKEN", "dev-gateway-token")
 DEFAULT_STORE_ID = os.environ.get("ATOM_DEFAULT_STORE_ID", "S001")
 DEFAULT_GRACE_DAYS = int(os.environ.get("ATOM_GRACE_DAYS", "30"))
@@ -233,6 +236,7 @@ CREATE TABLE IF NOT EXISTS stores (
     last_authorized_at  TEXT,
     device_fingerprint  TEXT,
     password_hash       TEXT,                                 -- store web login
+    gateway_token       TEXT,                                 -- 이 매장 게이트웨이 전용 토큰
     created_at          TEXT
 );
 
@@ -391,7 +395,8 @@ def init_db() -> None:
         migrations = {
             "stores": {"password_hash": "TEXT", "owner_id": "TEXT",
                        "address": "TEXT", "plan": "TEXT", "phone": "TEXT",
-                       "gateway_ip": "TEXT", "license_started_at": "TEXT"},
+                       "gateway_ip": "TEXT", "license_started_at": "TEXT",
+                       "gateway_token": "TEXT"},
             "devices": {"sw_version": "TEXT", "sort_order": "INTEGER",
                         "model_id": "TEXT"},
         }
@@ -417,6 +422,17 @@ def init_db() -> None:
                         (hash_password(DEFAULT_STORE_PASSWORD), row["store_id"]))
             log.warning("store %s had no password; set to the default store password",
                         row["store_id"])
+        # Existing stores keep the shared token they already authenticate with,
+        # so nothing that works today stops working; only stores created from
+        # here on get a unique one. Regenerate from the admin console to cut a
+        # store over.
+        for row in con.execute(
+                "SELECT store_id FROM stores WHERE gateway_token IS NULL"
+                " OR gateway_token=''").fetchall():
+            con.execute("UPDATE stores SET gateway_token=? WHERE store_id=?",
+                        (GATEWAY_TOKEN, row["store_id"]))
+            log.warning("store %s had no gateway token; seeded with the shared one",
+                        row["store_id"])
         if not con.execute("SELECT COUNT(*) FROM ac_models").fetchone()[0]:
             now = iso(utcnow())
             con.executemany(
@@ -440,7 +456,7 @@ def db_list_stores() -> list[dict]:
     with closing(_connect()) as con:
         rows = con.execute(
             "SELECT s.store_id, s.name, s.owner_id, o.name AS owner_name,"
-            "       s.address, s.phone, s.gateway_ip, s.plan,"
+            "       s.address, s.phone, s.gateway_ip, s.gateway_token, s.plan,"
             "       s.license_state, s.grace_period_days,"
             "       s.license_started_at, s.license_expires_at,"
             "       s.last_authorized_at, s.created_at,"
@@ -450,6 +466,40 @@ def db_list_stores() -> list[dict]:
             "  FROM stores s LEFT JOIN owners o ON o.owner_id = s.owner_id"
             " ORDER BY s.store_id").fetchall()
     return [dict(r) for r in rows]
+
+
+def new_gateway_token() -> str:
+    """A store's gateway credential. It is the only thing the gateway sends, so
+    it has to be unguessable on its own."""
+    return "gw_" + secrets.token_urlsafe(24)
+
+
+def db_store_by_gateway_token(token: str) -> dict | None:
+    """The store a gateway token belongs to, or None.
+
+    Compared in constant time across every candidate so a caller cannot time
+    their way to a valid token.
+    """
+    if not token:
+        return None
+    match = None
+    with closing(_connect()) as con:
+        rows = con.execute(
+            "SELECT * FROM stores WHERE gateway_token IS NOT NULL"
+            " AND gateway_token != ''").fetchall()
+    for row in rows:
+        if secrets.compare_digest(row["gateway_token"], token):
+            match = row
+    return dict(match) if match else None
+
+
+def db_regenerate_gateway_token(store_id: str) -> str | None:
+    token = new_gateway_token()
+    with closing(_connect()) as con:
+        changed = con.execute("UPDATE stores SET gateway_token=? WHERE store_id=?",
+                              (token, store_id)).rowcount
+        con.commit()
+    return token if changed else None
 
 
 def db_create_store(store_id: str, name: str, password: str, grace_days: int,
@@ -465,11 +515,11 @@ def db_create_store(store_id: str, name: str, password: str, grace_days: int,
         con.execute(
             "INSERT INTO stores (store_id, name, owner_id, address, plan,"
             " license_state, grace_period_days, license_started_at,"
-            " license_expires_at, password_hash, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " license_expires_at, password_hash, gateway_token, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (store_id, name, owner_id, address, plan, "active", grace_days, now,
              expires_at or iso(utcnow() + timedelta(days=365)),
-             hash_password(password), now))
+             hash_password(password), new_gateway_token(), now))
         con.commit()
         row = con.execute("SELECT * FROM stores WHERE store_id=?", (store_id,)).fetchone()
     return dict(row)
@@ -2043,6 +2093,22 @@ class PasswordResetRequest(BaseModel):
     password: str = Field(..., min_length=4, max_length=64)
 
 
+@app.post("/api/v1/admin/stores/{store_id}/gateway-token")
+async def admin_regenerate_gateway_token(store_id: str, request: Request) -> dict:
+    """Issue a fresh gateway token. The store's gateway stops connecting until
+    it is given the new one, which is the point: this is how a leaked token is
+    revoked."""
+    sess = require_admin(request)
+    token = await asyncio.to_thread(db_regenerate_gateway_token, store_id)
+    if token is None:
+        raise HTTPException(status_code=404, detail="등록되지 않은 매장입니다.")
+    await asyncio.to_thread(
+        db_log_history, store_id, "account", "gateway_token_reset", actor_of(sess),
+        None, None, None, "게이트웨이 토큰 재발급")
+    log.info("[%s] gateway token regenerated by admin", store_id)
+    return {"ok": True, "gateway_token": token}
+
+
 @app.post("/api/v1/admin/stores/{store_id}/password")
 async def admin_reset_password(store_id: str, req: PasswordResetRequest,
                                request: Request) -> dict:
@@ -2683,15 +2749,51 @@ def gateway_ip_allowed(store: dict | None, client_ip: str) -> bool:
     return client_ip in {ip.strip() for ip in allowed.split(",") if ip.strip()}
 
 
-@app.websocket("/ws/gateway/{store_id}")
-async def ws_gateway(ws: WebSocket, store_id: str, token: str = Query("")) -> None:
-    if token != GATEWAY_TOKEN:
-        await ws.close(code=4401)
-        log.warning("[%s] gateway rejected: bad token", store_id)
-        return
+@app.get("/api/v1/gateway/identify")
+async def gateway_identify(request: Request, token: str = Query("")) -> dict:
+    """Which store does this gateway token belong to?
 
+    The gateway calls this once at startup so it no longer has to be told its
+    own store id -- the token is the identity, and the IP allowlist is still
+    checked here and again on the socket.
+    """
+    store = await asyncio.to_thread(db_store_by_gateway_token, token)
+    client_ip = request.client.host if request.client else ""
+    if store is None:
+        log.warning("gateway identify refused: unknown token from %s", client_ip)
+        raise HTTPException(status_code=401, detail="알 수 없는 게이트웨이 토큰입니다.")
+    if not gateway_ip_allowed(store, client_ip):
+        log.warning("[%s] gateway identify refused: unregistered IP %s (allowed: %s)",
+                    store["store_id"], client_ip, store.get("gateway_ip"))
+        raise HTTPException(
+            status_code=403,
+            detail=f"이 매장에 등록되지 않은 IP입니다: {client_ip}")
+    log.info("[%s] gateway identified from %s", store["store_id"], client_ip)
+    return {"store_id": store["store_id"], "name": store.get("name"),
+            "grace_period_days": store.get("grace_period_days")}
+
+
+async def gateway_socket(ws: WebSocket, want_store: str | None, token: str) -> None:
+    """Shared body of both gateway socket routes.
+
+    The token alone says which store this is; ``want_store`` is only present on
+    the legacy path-addressed route, where it has to agree with the token.
+    """
     client_ip = ws.client.host if ws.client else ""
-    store = await asyncio.to_thread(db_store, store_id)
+    store = await asyncio.to_thread(db_store_by_gateway_token, token)
+    if store is None:
+        await ws.close(code=4401)
+        log.warning("gateway rejected: unknown token from %s (asked for %s)",
+                    client_ip, want_store or "-")
+        return
+    store_id = store["store_id"]
+    if want_store and want_store != store_id:
+        # A gateway configured for one store carrying another's token: refuse
+        # rather than quietly filing its data under the token's store.
+        await ws.close(code=4403)
+        log.warning("gateway rejected: token belongs to %s, not %s",
+                    store_id, want_store)
+        return
     if not gateway_ip_allowed(store, client_ip):
         # The gateway retries with backoff, so this warning repeats until the
         # IP is registered or the gateway is pointed elsewhere.
@@ -2726,6 +2828,16 @@ async def ws_gateway(ws: WebSocket, store_id: str, token: str = Query("")) -> No
     finally:
         await manager.detach_gateway(hub, ws)
         log.info("[%s] gateway disconnected", store_id)
+
+
+@app.websocket("/ws/gateway")
+async def ws_gateway_by_token(ws: WebSocket, token: str = Query("")) -> None:
+    await gateway_socket(ws, None, token)
+
+
+@app.websocket("/ws/gateway/{store_id}")
+async def ws_gateway(ws: WebSocket, store_id: str, token: str = Query("")) -> None:
+    await gateway_socket(ws, store_id, token)
 
 
 if __name__ == "__main__":

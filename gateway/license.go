@@ -74,6 +74,12 @@ func NewLicenseManager(storeID, path, cloudHTTP string, defaultGraceDays int) *L
 		},
 	}
 	m.load()
+	if m.cfg.StoreID != storeID {
+		// The config doubles as the cache resolveStoreID reads at boot, so the
+		// id that actually won has to be the one written back.
+		m.cfg.StoreID = storeID
+		m.save()
+	}
 	if m.cfg.DeviceFingerprint == "" {
 		m.cfg.DeviceFingerprint = fingerprint(storeID)
 		m.save()

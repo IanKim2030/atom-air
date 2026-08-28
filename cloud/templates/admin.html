@@ -377,6 +377,24 @@
       <input id="edit-gwip" maxlength="256" placeholder="예: 192.168.0.20, 127.0.0.1" class="font-mono">
       <p class="text-[10px] text-slate-500 mt-1">쉼표로 여러 개 등록. 비우면 제한 없음. 등록 시 목록에 없는 IP의 게이트웨이 접속은 거부됩니다.</p>
     </div>
+    <div class="pt-3 border-t border-slate-800 space-y-1.5">
+      <label>게이트웨이 토큰</label>
+      <div class="flex gap-1.5">
+        <input id="edit-gwtoken" readonly class="font-mono flex-1 min-w-0 text-[11px]">
+        <button type="button" onclick="copyGatewayToken()" title="복사"
+                class="touch-btn shrink-0 px-3 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:text-white">
+          <i data-lucide="copy" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <p class="text-[10px] text-slate-500">게이트웨이는 이 값만 있으면 됩니다 — 매장 ID 없이
+        <code class="text-slate-400">--token</code> 으로 전달하면 클라우드가 매장을 알려줍니다.</p>
+      <button type="button" onclick="regenerateGatewayToken()"
+              class="touch-btn w-full py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white text-xs font-bold flex items-center justify-center gap-1.5">
+        <i data-lucide="refresh-cw" class="w-4 h-4"></i><span>토큰 재발급</span>
+      </button>
+      <p class="text-[10px] text-slate-500">재발급하면 기존 토큰은 즉시 무효가 되고, 새 토큰을 넣기 전까지 그 매장 게이트웨이는 접속하지 못합니다.</p>
+    </div>
+
     <div class="pt-3 border-t border-slate-800">
       <button type="button" onclick="resetTempPassword()"
               class="touch-btn w-full py-2.5 rounded-xl bg-amber-600/20 hover:bg-amber-600 border border-amber-500/30 text-amber-300 hover:text-white text-xs font-bold flex items-center justify-center gap-1.5">
@@ -1101,7 +1119,32 @@ function openStoreEditModal(storeId) {
   $("edit-address").value = s?.address || "";
   $("edit-phone").value = s?.phone || "";
   $("edit-gwip").value = s?.gateway_ip || "";
+  $("edit-gwtoken").value = s?.gateway_token || "";
   showModal("store-edit-modal");
+}
+
+function copyGatewayToken() {
+  const token = $("edit-gwtoken").value;
+  if (!token) return;
+  navigator.clipboard.writeText(token)
+    .then(() => alert("게이트웨이 토큰을 복사했습니다."))
+    .catch(() => alert("복사에 실패했습니다. 입력란에서 직접 선택해 복사하세요."));
+}
+
+async function regenerateGatewayToken() {
+  const storeId = S.editTarget;
+  const warn = `${storeId} 의 게이트웨이 토큰을 재발급할까요?
+
+기존 토큰은 즉시 무효가 됩니다. 그 매장 게이트웨이는 새 토큰을 넣어 다시 시작할 때까지 접속하지 못합니다.`;
+  if (!confirm(warn)) return;
+  try {
+    const res = await api(`/api/v1/admin/stores/${encodeURIComponent(storeId)}/gateway-token`,
+                          { method: "POST" });
+    $("edit-gwtoken").value = res.gateway_token;
+    const store = S.stores.find((x) => x.store_id === storeId);
+    if (store) store.gateway_token = res.gateway_token;
+    alert("새 토큰을 발급했습니다. 게이트웨이에 새 값을 넣고 다시 시작하세요.");
+  } catch (err) { showErr("store-edit-error", err.message); }
 }
 $("store-edit-form").addEventListener("submit", async (e) => {
   e.preventDefault();
