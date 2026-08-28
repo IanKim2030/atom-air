@@ -12,18 +12,42 @@ executable specification is [`tools/fake_atom.py`](../tools/fake_atom.py):
 | subscribes | `atom/{store}/ota/{dev_id}` | `{"cmd":"OTA","url","protocol","model","size"}` or `{"cmd":"IRDATA","url","model_id","size","slots"}` |
 | subscribes | `atom/{store}/learn/{dev_id}` | `{"cmd":"LEARN","session_id","slot","timeout_s"}` / `{"cmd":"LEARN_CANCEL"}` |
 
-Two build targets mirror the SOTA pipeline:
+Two build targets mirror the SOTA pipeline, and a third is a bench tool:
 
-| env | contents | how it gets onto the device |
-|---|---|---|
-| `atom_base` | Wi-Fi + MQTT + sensor loop + HTTP OTA client | USB, once, at install time |
-| `atom_ac` | base + IRremoteESP8266 (`IRac`) | pushed by the gateway over the store LAN when an AC model is picked in the web UI |
+| env | source | contents | how it gets onto the device |
+|---|---|---|---|
+| `atom_base` | `src/main.cpp` | Wi-Fi + MQTT + sensor loop + HTTP OTA client | USB, once, at install time |
+| `atom_ac` | `src/main.cpp` | base + IRremoteESP8266 (`IRsend`/`IRrecv`) | pushed by the gateway over the store LAN |
+| `atom_irbench` | `src/ir_bench.cpp` | IR 학습·송신만. No Wi-Fi, no MQTT | USB, by hand, when you are debugging IR |
 
-The `atom_ac` image is **universal**: `IRac` speaks every protocol in the cloud's
-model catalog, and the device learns *which* one from the OTA command — the
-protocol name is stamped into NVS **before** flashing, so the freshly booted AC
-image reads it and raises `FLAG_IR_READY`. That flag in the sensor packet is
-what makes the gateway's SOTA `verify` stage pass.
+`src/` holds one entry point per target, so every env in `platformio.ini` names
+the single file it compiles — otherwise a second `setup()`/`loop()` would break
+all of them.
+
+The `atom_ac` image is **universal**: there is no protocol database and nothing
+brand-specific in it, so the same binary drives every air conditioner by
+replaying timings learned from that unit's own remote. `FLAG_IR_READY` follows
+the learned bundle rather than the firmware, and that flag in the sensor packet
+is what makes the gateway's SOTA `verify` stage pass.
+
+### `atom_irbench` — IR 벤치
+
+When the store firmware's IR path looks wrong, this says whether the hardware or
+the plumbing is at fault. It joins nothing and stores nothing: point a remote at
+G25, read the decode over USB serial, press the ATOM's front button to fire the
+same code back.
+
+```bash
+pio run -e atom_irbench -t upload
+pio device monitor
+```
+
+It resends by protocol + value, so it handles NEC-style remotes (TV, fan, light)
+and **not** air conditioners — their full-state frames decode as `UNKNOWN` and
+cannot be reconstructed from a 32-bit value. That limitation is precisely why
+the store firmware replays raw timings instead. The LED is driven with
+`neopixelWrite()` rather than FastLED so that nothing contends with
+IRremoteESP8266 for an RMT timer.
 
 ## Hardware
 
