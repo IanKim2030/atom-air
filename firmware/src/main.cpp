@@ -707,6 +707,7 @@ static void performOta() {
 //   mqtt <host> [port]       save the gateway address to NVS and reboot
 //   mqtt?                    show host / port / source / link state
 //   mqtt reset               drop the NVS address, back to config.h
+//   scan                     list the 2.4GHz APs this radio can actually see
 static String takeToken(String &line) {
   line.trim();
   if (line.startsWith("\"")) {
@@ -726,6 +727,47 @@ static String takeToken(String &line) {
   String tok = line.substring(0, sp);
   line = line.substring(sp + 1);
   return tok;
+}
+
+static const char *authName(wifi_auth_mode_t mode) {
+  switch (mode) {
+    case WIFI_AUTH_OPEN:            return "open";
+    case WIFI_AUTH_WEP:             return "WEP";
+    case WIFI_AUTH_WPA_PSK:         return "WPA";
+    case WIFI_AUTH_WPA2_PSK:        return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK:    return "WPA/WPA2";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-ent";
+    case WIFI_AUTH_WPA3_PSK:        return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK:   return "WPA2/WPA3";
+    default:                        return "?";
+  }
+}
+
+// scan lists what this radio can actually see, which is the only answer that
+// settles "the SSID is right but it will not join". An ESP32 has no 5 GHz
+// radio, so a 5 GHz-only AP is invisible here however strong it looks on a
+// phone -- that difference is exactly what this command is for.
+static void handleScan() {
+  Serial.println("[scan] scanning 2.4GHz...");
+  WiFi.mode(WIFI_STA);
+  int found = WiFi.scanNetworks();
+  if (found <= 0) {
+    Serial.println("[scan] no networks found");
+  } else {
+    Serial.printf("[scan] %d networks\n", found);
+    for (int i = 0; i < found; i++) {
+      Serial.printf("[scan]  %-24s ch%-3d %4d dBm  %s\n", WiFi.SSID(i).c_str(),
+                    WiFi.channel(i), WiFi.RSSI(i),
+                    authName(WiFi.encryptionType(i)));
+    }
+  }
+  WiFi.scanDelete();
+  Serial.println("[scan] done -- this radio is 2.4GHz only; a 5GHz-only AP "
+                 "never appears here");
+  // Scanning drops a pending association, so re-arm it or ensureWifi's loop
+  // would spin forever waiting on a request that no longer exists.
+  if (WiFi.status() != WL_CONNECTED && !wifiSsid.isEmpty())
+    WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 }
 
 static void handleSerialLine(String line) {
@@ -805,6 +847,11 @@ static void handleSerialLine(String line) {
     Serial.printf("[mqtt] saved %s:%u to NVS -- rebooting\n", host.c_str(), port);
     delay(200);
     ESP.restart();
+  }
+
+  if (line == "scan") {
+    handleScan();
+    return;
   }
 
   Serial.printf("[serial] unknown command: %s\n", line.c_str());
