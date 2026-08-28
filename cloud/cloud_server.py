@@ -474,23 +474,46 @@ def new_gateway_token() -> str:
     return "gw_" + secrets.token_urlsafe(24)
 
 
-def db_store_by_gateway_token(token: str) -> dict | None:
-    """The store a gateway token belongs to, or None.
+def db_stores_by_gateway_token(token: str) -> list[dict]:
+    """Every store this gateway token opens -- normally one.
 
-    Compared in constant time across every candidate so a caller cannot time
-    their way to a valid token.
+    More than one is possible right after the upgrade, because stores that
+    predate per-store tokens were all backfilled with the shared one. Callers
+    must treat that as ambiguous rather than picking a winner. Compared in
+    constant time across every candidate so a caller cannot time their way to a
+    valid token.
     """
     if not token:
-        return None
-    match = None
+        return []
     with closing(_connect()) as con:
         rows = con.execute(
             "SELECT * FROM stores WHERE gateway_token IS NOT NULL"
             " AND gateway_token != ''").fetchall()
-    for row in rows:
-        if secrets.compare_digest(row["gateway_token"], token):
-            match = row
-    return dict(match) if match else None
+    return [dict(r) for r in rows
+            if secrets.compare_digest(r["gateway_token"], token)]
+
+
+def resolve_gateway_store(token: str, want_store: str | None) -> tuple[dict | None, str]:
+    """Pick the store a connecting gateway belongs to.
+
+    Returns (store, problem). ``want_store`` disambiguates a shared token, which
+    is exactly what --store-id is for while a deployment is still being cut over
+    to per-store tokens.
+    """
+    matches = db_stores_by_gateway_token(token)
+    if not matches:
+        return None, "알 수 없는 게이트웨이 토큰입니다."
+    if want_store:
+        for store in matches:
+            if store["store_id"] == want_store:
+                return store, ""
+        return None, (f"이 토큰은 {want_store} 의 것이 아닙니다 "
+                      f"(해당 토큰의 매장: {', '.join(m['store_id'] for m in matches)}).")
+    if len(matches) > 1:
+        return None, ("이 토큰을 여러 매장이 함께 쓰고 있어 매장을 특정할 수 없습니다: "
+                      + ", ".join(m["store_id"] for m in matches)
+                      + ". 관리자 콘솔에서 토큰을 재발급하거나 --store-id 로 지정하세요.")
+    return matches[0], ""
 
 
 def db_regenerate_gateway_token(store_id: str) -> str | None:
@@ -2757,11 +2780,14 @@ async def gateway_identify(request: Request, token: str = Query("")) -> dict:
     own store id -- the token is the identity, and the IP allowlist is still
     checked here and again on the socket.
     """
-    store = await asyncio.to_thread(db_store_by_gateway_token, token)
     client_ip = request.client.host if request.client else ""
+    store, problem = await asyncio.to_thread(resolve_gateway_store, token, None)
     if store is None:
-        log.warning("gateway identify refused: unknown token from %s", client_ip)
-        raise HTTPException(status_code=401, detail="알 수 없는 게이트웨이 토큰입니다.")
+        log.warning("gateway identify refused from %s: %s", client_ip, problem)
+        # 409 for a shared token, 401 for an unknown one: the first is a
+        # configuration the operator can fix, the second is a bad credential.
+        raise HTTPException(
+            status_code=409 if "여러 매장" in problem else 401, detail=problem)
     if not gateway_ip_allowed(store, client_ip):
         log.warning("[%s] gateway identify refused: unregistered IP %s (allowed: %s)",
                     store["store_id"], client_ip, store.get("gateway_ip"))
@@ -2780,20 +2806,15 @@ async def gateway_socket(ws: WebSocket, want_store: str | None, token: str) -> N
     the legacy path-addressed route, where it has to agree with the token.
     """
     client_ip = ws.client.host if ws.client else ""
-    store = await asyncio.to_thread(db_store_by_gateway_token, token)
+    store, problem = await asyncio.to_thread(resolve_gateway_store, token, want_store)
     if store is None:
+        # Refuse rather than quietly filing this gateway's data under whichever
+        # store the token happened to match first.
         await ws.close(code=4401)
-        log.warning("gateway rejected: unknown token from %s (asked for %s)",
-                    client_ip, want_store or "-")
+        log.warning("gateway rejected from %s (asked for %s): %s",
+                    client_ip, want_store or "-", problem)
         return
     store_id = store["store_id"]
-    if want_store and want_store != store_id:
-        # A gateway configured for one store carrying another's token: refuse
-        # rather than quietly filing its data under the token's store.
-        await ws.close(code=4403)
-        log.warning("gateway rejected: token belongs to %s, not %s",
-                    store_id, want_store)
-        return
     if not gateway_ip_allowed(store, client_ip):
         # The gateway retries with backoff, so this warning repeats until the
         # IP is registered or the gateway is pointed elsewhere.
