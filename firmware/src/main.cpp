@@ -51,6 +51,7 @@
 
 #ifdef HAS_IR
 #include <SPIFFS.h>
+#include <IRremoteESP8266.h>   // decode_type_t, kStateSizeMax
 #include <IRrecv.h>
 #include <IRsend.h>
 #include <IRutils.h>
