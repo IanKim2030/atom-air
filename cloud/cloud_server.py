@@ -353,6 +353,9 @@ CREATE TABLE IF NOT EXISTS ir_codes (
     freq_khz     INTEGER NOT NULL DEFAULT 38,
     length       INTEGER NOT NULL,           -- mark/space entry count
     raw_json     TEXT    NOT NULL,           -- JSON array of uint16 microseconds
+    protocol     TEXT,                       -- what the device's decoder saw, or NULL
+    bits         INTEGER,
+    value_hex    TEXT,                       -- value (or AC state bytes) as hex
     captured_at  TEXT,
     captured_by  TEXT,                       -- admin actor id
     source_store TEXT,                       -- where the capture device lived
@@ -387,6 +390,10 @@ def init_db() -> None:
                        "gateway_token": "TEXT"},
             "devices": {"sw_version": "TEXT", "sort_order": "INTEGER",
                         "model_id": "TEXT"},
+            # Codes captured before the device reported a decode keep NULL here
+            # and replay from raw_json, exactly as they always did.
+            "ir_codes": {"protocol": "TEXT", "bits": "INTEGER",
+                         "value_hex": "TEXT"},
         }
         for table, wanted in migrations.items():
             columns = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
@@ -952,6 +959,8 @@ IR_SLOTS = ["power_on", "power_off",
             "temp_up", "temp_down",
             "fan_up", "fan_down"]
 # Capture sanity bounds; anything outside is a mis-read, not a remote.
+IR_PROTOCOL_MAX_LEN = 32
+IR_VALUE_HEX_MAX_LEN = 64          # 32 AC state bytes as hex, plus "0x"
 IR_RAW_MIN_LEN, IR_RAW_MAX_LEN = 20, 1023
 IR_RAW_MIN_US, IR_RAW_MAX_US = 10, 65000
 IR_FREQ_MIN_KHZ, IR_FREQ_MAX_KHZ = 30, 60
@@ -1072,26 +1081,38 @@ def db_ir_code_list(model_id: str) -> list[dict]:
     with closing(_connect()) as con:
         rows = con.execute(
             "SELECT slot, freq_khz, length, captured_at, captured_by,"
-            "       source_store, source_dev"
+            "       source_store, source_dev, protocol"
             "  FROM ir_codes WHERE model_id=? ORDER BY slot", (model_id,)).fetchall()
     return [dict(r) for r in rows]
 
 
 def db_save_ir_code(model_id: str, slot: str, freq_khz: int, raw: list[int],
                     captured_by: str | None, source_store: str | None,
-                    source_dev: int | None) -> None:
+                    source_dev: int | None, protocol: str | None = None,
+                    bits: int | None = None,
+                    value_hex: str | None = None) -> None:
+    """Store one learned button. raw is always kept; the decode may be absent.
+
+    Re-learning a slot overwrites the decode too, including back to NULL: a
+    second capture that the decoder could not read must not leave the first
+    capture's protocol attached to the new timings.
+    """
     with closing(_connect()) as con:
         con.execute(
             "INSERT INTO ir_codes (model_id, slot, freq_khz, length, raw_json,"
-            " captured_at, captured_by, source_store, source_dev)"
-            " VALUES (?,?,?,?,?,?,?,?,?)"
+            " captured_at, captured_by, source_store, source_dev,"
+            " protocol, bits, value_hex)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(model_id, slot) DO UPDATE SET"
             "   freq_khz=excluded.freq_khz, length=excluded.length,"
             "   raw_json=excluded.raw_json, captured_at=excluded.captured_at,"
             "   captured_by=excluded.captured_by,"
-            "   source_store=excluded.source_store, source_dev=excluded.source_dev",
+            "   source_store=excluded.source_store, source_dev=excluded.source_dev,"
+            "   protocol=excluded.protocol, bits=excluded.bits,"
+            "   value_hex=excluded.value_hex",
             (model_id, slot, freq_khz, len(raw), json.dumps(raw),
-             iso(utcnow()), captured_by, source_store, source_dev))
+             iso(utcnow()), captured_by, source_store, source_dev,
+             protocol, bits, value_hex))
         con.commit()
 
 
@@ -1104,19 +1125,36 @@ def db_delete_ir_code(model_id: str, slot: str) -> bool:
 
 
 def db_ir_bundle(model_id: str) -> dict | None:
-    """The deployable code bundle the device stores in SPIFFS."""
+    """The deployable code bundle the device stores in SPIFFS.
+
+    v2 slots are objects: `p`/`b`/`v` carry the decode when there is one, `raw`
+    always carries the timings. The device prefers the decode and falls back to
+    raw, so a slot with no protocol is not a broken slot -- it is the ordinary
+    case for an air conditioner. Keys are short because this file sits in a
+    128KB SPIFFS partition alongside eight other codes.
+    """
     with closing(_connect()) as con:
         rows = con.execute(
-            "SELECT slot, freq_khz, raw_json FROM ir_codes WHERE model_id=?"
-            " ORDER BY slot", (model_id,)).fetchall()
+            "SELECT slot, freq_khz, raw_json, protocol, bits, value_hex"
+            " FROM ir_codes WHERE model_id=? ORDER BY slot", (model_id,)).fetchall()
     if not rows:
         return None
     freqs = [r["freq_khz"] for r in rows]
-    return {"v": 1, "model_id": model_id,
+
+    def slot_entry(r) -> dict:
+        entry: dict = {"raw": json.loads(r["raw_json"])}
+        if r["protocol"] and r["protocol"] != "UNKNOWN" and r["value_hex"]:
+            entry["p"] = r["protocol"]
+            entry["v"] = r["value_hex"]
+            if r["bits"]:
+                entry["b"] = r["bits"]
+        return entry
+
+    return {"v": 2, "model_id": model_id,
             # One carrier for the bundle: all codes come from one remote, so
             # take the most common reported frequency.
             "freq_khz": max(set(freqs), key=freqs.count),
-            "slots": {r["slot"]: json.loads(r["raw_json"]) for r in rows}}
+            "slots": {r["slot"]: slot_entry(r) for r in rows}}
 
 
 def db_ac_models_admin() -> list[dict]:
@@ -2706,6 +2744,28 @@ async def handle_gateway_binary(hub: StoreHub, blob: bytes) -> None:
         await manager.broadcast(hub, {"type": "live", "data": reading})
 
 
+def decoded_fields(msg: dict) -> tuple[str | None, int | None, str | None]:
+    """Pull a capture's decode out of the device payload, or (None, None, None).
+
+    The device sends `value` for ordinary remotes and `state` for the long
+    frames air conditioners use. They are one union on the wire and become one
+    hex column here, because what tells them apart is the protocol, which is
+    stored next to it.
+    """
+    protocol = msg.get("protocol")
+    if (not isinstance(protocol, str) or not protocol
+            or protocol == "UNKNOWN" or len(protocol) > IR_PROTOCOL_MAX_LEN):
+        return None, None, None
+    value_hex = msg.get("state") or msg.get("value")
+    if (not isinstance(value_hex, str) or not value_hex
+            or len(value_hex) > IR_VALUE_HEX_MAX_LEN
+            or not re.fullmatch(r"(0[xX])?[0-9a-fA-F]+", value_hex)):
+        return None, None, None
+    bits = msg.get("bits")
+    bits = int(bits) if isinstance(bits, int) and 0 < bits <= 4096 else None
+    return protocol, bits, value_hex
+
+
 async def handle_ir_capture(hub: StoreHub, msg: dict) -> None:
     """A capture (or capture failure) relayed up from a learning device."""
     learn = hub.learn
@@ -2756,12 +2816,20 @@ async def handle_ir_capture(hub: StoreHub, msg: dict) -> None:
     freq = int(freq) if isinstance(freq, (int, float)) \
         and IR_FREQ_MIN_KHZ <= freq <= IR_FREQ_MAX_KHZ else 38
 
+    # The decode, when the device managed one. Deliberately not checked against
+    # a protocol list here: whether a name is usable is decided by the device
+    # that will replay it (strToDecodeType), and an unusable one costs nothing
+    # because the slot still carries its raw timings.
+    protocol, bits, value_hex = decoded_fields(msg)
+
     await asyncio.to_thread(
         db_save_ir_code, learn["model_id"], learn["slot"], freq, raw,
-        learn.get("actor_id"), hub.store_id, learn["dev_id"])
+        learn.get("actor_id"), hub.store_id, learn["dev_id"],
+        protocol, bits, value_hex)
     learn["status"] = "captured"
     learn["length"] = len(raw)
     learn["freq_khz"] = freq
+    learn["protocol"] = protocol
     await asyncio.to_thread(
         db_log_history, hub.store_id, "ir_learn", "ir_captured",
         {"type": "admin", "id": learn.get("actor_id")}, learn["dev_id"], None,

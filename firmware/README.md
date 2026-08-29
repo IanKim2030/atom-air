@@ -12,44 +12,22 @@ executable specification is [`tools/fake_atom.py`](../tools/fake_atom.py):
 | subscribes | `atom/{store}/ota/{dev_id}` | `{"cmd":"OTA","url","protocol","model","size"}` or `{"cmd":"IRDATA","url","model_id","size","slots"}` |
 | subscribes | `atom/{store}/learn/{dev_id}` | `{"cmd":"LEARN","session_id","slot","timeout_s"}` / `{"cmd":"LEARN_CANCEL"}` |
 
-Two build targets mirror the SOTA pipeline, and a third is a bench tool:
+Two build targets mirror the SOTA pipeline:
 
-| env | source | contents | how it gets onto the device |
-|---|---|---|---|
-| `atom_base` | `src/main.cpp` | Wi-Fi + MQTT + sensor loop + HTTP OTA client | USB, once, at install time |
-| `atom_ac` | `src/main.cpp` | base + IRremoteESP8266 (`IRsend`/`IRrecv`) | pushed by the gateway over the store LAN |
-| `atom_irbench` | `src/ir_bench.cpp` | IR 학습·송신만. No Wi-Fi, no MQTT | USB, by hand, when you are debugging IR |
+| env | contents | how it gets onto the device |
+|---|---|---|
+| `atom_base` | Wi-Fi + MQTT + sensor loop + HTTP OTA client | USB, once, at install time |
+| `atom_ac` | base + IRremoteESP8266 (`IRsend`/`IRrecv`) | pushed by the gateway over the store LAN |
 
-`src/` holds one entry point per target, so every env in `platformio.ini` names
-the single file it compiles — otherwise a second `setup()`/`loop()` would break
-all of them.
+`src/` holds exactly one entry point, and `build_src_filter` in
+`platformio.ini` says so — a stray second `setup()`/`loop()` under `src/` would
+break every target.
 
-The `atom_ac` image is **universal**: there is no protocol database and nothing
-brand-specific in it, so the same binary drives every air conditioner by
-replaying timings learned from that unit's own remote. `FLAG_IR_READY` follows
-the learned bundle rather than the firmware, and that flag in the sensor packet
-is what makes the gateway's SOTA `verify` stage pass.
-
-### `atom_irbench` — IR 벤치
-
-When the store firmware's IR path looks wrong, this says whether the hardware or
-the plumbing is at fault. It joins nothing and stores nothing: point a remote at
-G25, read the decode over USB serial, press the ATOM's front button to fire the
-same code back.
-
-```bash
-pio run -e atom_irbench -t upload
-pio device monitor
-```
-
-The resend is a **loopback check**, not a control feature — firing a decoded
-code back is how you confirm the transmit path works. It needs a remote simple
-enough to decode (NEC-style: TV, fan, light); air conditioner frames come back
-`UNKNOWN` and are not resendable this way, which is expected, and is why the
-store firmware replays raw timings instead. Use the dashboard's `IR 수신 대기`
-when you need to see an AC frame. The LED is driven with `neopixelWrite()`
-rather than FastLED so that nothing contends with IRremoteESP8266 for an RMT
-timer.
+The `atom_ac` image is **universal**: there is no brand database and nothing
+model-specific in it, so the same binary drives every air conditioner from what
+was captured off that unit's own remote. `FLAG_IR_READY` follows the learned
+bundle rather than the firmware, and that flag in the sensor packet is what
+makes the gateway's SOTA `verify` stage pass.
 
 ## Hardware
 
@@ -146,24 +124,39 @@ then.
 
 ## IR control: 학습 리모컨
 
-There is no brand or protocol database anywhere in the system. Every air
-conditioner is controlled by replaying signals captured from its own remote,
-which is why an obscure unit works exactly as well as a common one:
+There is no brand database anywhere in the system. Every air conditioner is
+controlled from signals captured off its own remote, which is why an obscure
+unit works exactly as well as a common one:
 
 - The learned code bundle arrives as `{"cmd":"IRDATA"}` on the OTA topic: the
   device downloads
   `ir_<model_id>.json` from the gateway's :8080 server, streams it into SPIFFS
   (`/irdata.json`), validates the header, then stamps NVS and acks — no reboot.
-- An AC frame is mapped to a slot key (`off`, `cool_18..30`, `heat_18..30`;
-  fan is fixed to whatever the remote sent when learned) and that slot's
-  mark/space array is replayed with `sendRaw()`. Unlearned combos are skipped.
+- An AC frame is mapped to button slots (`power_on`, `mode_cool`, `temp_up`, …)
+  and each is sent one of **two ways**, in this order:
+  1. **Decoded** — if the receiver recognised the remote at learn time, the
+     frame is rebuilt from protocol + value (or state bytes) with `send()`. The
+     library builds it to spec, so a capture with some noise in it still
+     transmits cleanly.
+  2. **Raw** — otherwise the recorded mark/space timings go out via
+     `sendRaw()`. This is what carries the remotes no decoder knows, which is
+     most air conditioners; the cost is that the capture is reproduced as-is.
+
+  Unlearned slots are skipped. Which path a send took is printed to the console,
+  so the 디버깅 popup shows it: `[ir] decoded send: temp_up as NEC` or
+  `[ir] raw send: temp_up (200 entries @ 38kHz)`.
 - **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G25**, VCC→3V3,
   GND→GND) on the unit used for capture — transmit-only units need nothing.
-  A `LEARN` command arms the receiver (LED purple); the next decoded frame is
-  published up as raw timings and the receiver disarms.
+  A `LEARN` command arms the receiver (LED purple); the next frame is published
+  up with both its raw timings and whatever the decoder made of it, and the
+  receiver disarms.
 - A bare device gets `atom_ac.bin` flashed automatically before its first
   IRDATA push, so registering and learning a remote is the only thing an
   installer has to do.
+- The bundle is versioned. `v1` stored each slot as a bare timing array and
+  still loads — those slots simply take the raw path, because there is nothing
+  else in them. `v2` stores an object per slot: `p`/`b`/`v` for the decode when
+  there is one, `raw` always.
 
 ## Console mirror (웹 디버깅 패널)
 
@@ -181,11 +174,9 @@ shows.
 
 ## Notes
 
-- `CARRIER_AC` in the catalog is not currently supported by `IRac`'s common
-  interface; the device logs and drops commands for it rather than sending a
-  wrong burst. The other catalog protocols (Samsung, LG/LG2, Daikin/Daikin216,
-  Mitsubishi) all work. Unsupported units (Carrier included) can instead be
-  registered as a **raw** model and learned from the real remote (see above).
+- A protocol the sender does not support is not a dead end: `send()` returning
+  false drops through to the raw path, same as an undecodable capture. Nothing
+  needs a driver written for it.
 - The AC frame's checksum, header (`0x55`) and tail (`0xEE`) are verified
   on-device; malformed frames are rejected, matching `common/protocol.py`.
 - MQTT keepalive and Wi-Fi reconnect are automatic; the status LED tells a

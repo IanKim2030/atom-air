@@ -14,14 +14,19 @@
 // raises FLAG_IR_READY; atom_ac adds IRremoteESP8266's IRsend and IRrecv, and
 // reports ready once a learned bundle is actually sitting in SPIFFS.
 //
-// One IR control path, and it is manufacturer-agnostic: replay the timings
-// captured from the customer's own remote. The learned bundle arrives as a
-// JSON data file over the same OTA HTTP server (cmd IRDATA), lives in SPIFFS,
-// and maps each full AC state ("off", "cool_24", ...) to a raw mark/space
-// timing array. There is no brand or protocol database on the device -- a
-// remote nobody has written a driver for works the same as a common one.
-// Learning: a LEARN command arms the IR receiver on IR_RX_PIN; the next
-// decoded frame goes up atom/{store}/ir/{dev} as raw timings.
+// IR control is manufacturer-agnostic: everything comes from the customer's own
+// remote. The learned bundle arrives as a JSON data file over the same OTA HTTP
+// server (cmd IRDATA), lives in SPIFFS, and maps each button slot ("power_on",
+// "temp_up", ...) to what was captured for it. Learning: a LEARN command arms
+// the receiver on IR_RX_PIN; the next frame goes up atom/{store}/ir/{dev}.
+//
+// Two ways to send one slot, tried in that order. If the decoder recognised the
+// remote, the frame is regenerated from protocol + value (or state bytes), so a
+// slightly noisy capture still transmits to spec. Otherwise the recorded
+// mark/space timings are replayed, which works for remotes no decoder knows --
+// most air conditioners -- at the cost of reproducing the capture as-is. There
+// is still no brand database: the protocol, when there is one, was learned from
+// the remote rather than looked up.
 //
 // The temperature/humidity sensor on the Grove port is auto-detected at boot:
 // M5 ENV III (SHT30) and ENV IV (SHT40) over I2C, or a bare DHT22/DHT11 on
@@ -146,7 +151,7 @@ static String otaUrl, otaModel;
 static long otaSize = -1;
 
 #ifdef HAS_IR
-static IRsend irsendRaw(IR_TX_PIN);            // learned-code replay (TX)
+static IRsend irsend(IR_TX_PIN);            // learned-code replay (TX)
 static IRrecv irrecv(IR_RX_PIN, 1024, 50, true);  // learn capture (AC frames are long)
 
 // IRDATA download request, recorded by the callback, run from loop().
@@ -328,12 +333,42 @@ static void buildSensorPacket(uint8_t out[SENSOR_SIZE]) {
 static uint8_t appliedMode = 0, appliedTemp = 24, appliedFan = 0;
 static bool haveApplied = false;
 
-// Replays one slot's timings from SPIFFS. The ArduinoJson filter keeps memory
-// at ~one code even though the file holds all nine.
+static int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// "0x1A2B" or "1A2B" -> bytes. Returns how many were written.
+static uint16_t hexToBytes(const char *s, uint8_t *out, uint16_t maxBytes) {
+  if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+  uint16_t n = 0;
+  while (s[0] && s[1] && n < maxBytes) {
+    int hi = hexNibble(s[0]), lo = hexNibble(s[1]);
+    if (hi < 0 || lo < 0) break;
+    out[n++] = (uint8_t)((hi << 4) | lo);
+    s += 2;
+  }
+  return n;
+}
+
+// Replays one slot from SPIFFS. The ArduinoJson filter keeps memory at ~one
+// code even though the file holds all nine.
+//
+// Two ways to send, in order of preference. If the decoder recognised the
+// remote at learn time, regenerate the frame from protocol + value/state: the
+// library builds it to spec, so a capture with a little noise in it still
+// transmits cleanly. Otherwise replay the timings we recorded, which works for
+// remotes no decoder knows — most air conditioners — at the cost of echoing
+// whatever imperfections the capture had.
+//
+// v1 bundles stored each slot as a bare timing array; those still load, and
+// take the raw path because there is nothing else in them.
 static bool sendSlot(const char *slot) {
   File f = SPIFFS.open(IRDATA_PATH, FILE_READ);
   if (!f) {
-    LOG.println("[ir] raw: no /irdata.json in SPIFFS — command ignored");
+    LOG.println("[ir] no /irdata.json in SPIFFS — command ignored");
     return false;
   }
   JsonDocument filter;
@@ -344,21 +379,51 @@ static bool sendSlot(const char *slot) {
       deserializeJson(doc, f, DeserializationOption::Filter(filter));
   f.close();
   if (err != DeserializationError::Ok) {
-    LOG.printf("[ir] raw: bundle parse failed: %s\n", err.c_str());
+    LOG.printf("[ir] bundle parse failed: %s\n", err.c_str());
     return false;
   }
-  JsonArray arr = doc["slots"][slot];
+  JsonVariant entry = doc["slots"][slot];
+  if (entry.isNull()) {
+    LOG.printf("[ir] %s not learned — skipped\n", slot);
+    return false;
+  }
+  const bool v1 = entry.is<JsonArray>();
+  JsonArray arr = v1 ? entry.as<JsonArray>() : entry["raw"].as<JsonArray>();
+  const char *pname = v1 ? "" : (entry["p"] | "");
+
+  decode_type_t type = pname[0] ? strToDecodeType(pname) : UNKNOWN;
+  if (type != UNKNOWN) {
+    bool sent = false;
+    const char *hex = entry["v"] | "";
+    if (hasACState(type)) {
+      // Long frames live in a byte array; "v" holds them as hex.
+      static uint8_t state[kStateSizeMax];
+      uint16_t nbytes = hexToBytes(hex, state, sizeof(state));
+      if (nbytes) sent = irsend.send(type, state, nbytes);
+    } else {
+      uint16_t bits = entry["b"] | 0;
+      if (bits && hex[0])
+        sent = irsend.send(type, (uint64_t)strtoull(hex, nullptr, 16), bits);
+    }
+    if (sent) {
+      LOG.printf("[ir] decoded send: %s as %s\n", slot, pname);
+      delay(250);   // remotes need a gap or the AC drops the second frame
+      return true;
+    }
+    LOG.printf("[ir] %s: %s not sendable — falling back to raw\n", slot, pname);
+  }
+
   if (arr.isNull() || arr.size() < 20 || arr.size() > 1024) {
-    LOG.printf("[ir] raw: %s not learned — skipped\n", slot);
+    LOG.printf("[ir] %s: no usable raw timings — skipped\n", slot);
     return false;
   }
   static uint16_t rawBuf[1024];
   uint16_t n = 0;
   for (JsonVariant v : arr) rawBuf[n++] = v.as<uint16_t>();
   uint16_t freq = doc["freq_khz"] | 38;
-  irsendRaw.sendRaw(rawBuf, n, freq);
-  LOG.printf("[ir] raw: sent %s (%u entries @ %ukHz)\n", slot, n, freq);
-  delay(250);   // remotes need a gap between frames or the AC drops the second
+  irsend.sendRaw(rawBuf, n, freq);
+  LOG.printf("[ir] raw send: %s (%u entries @ %ukHz)\n", slot, n, freq);
+  delay(250);
   return true;
 }
 
@@ -432,6 +497,25 @@ static void dumpRawTimings(const char *tag, const uint16_t *raw, uint16_t len) {
       at = 0;
       line[0] = '\0';
     }
+  }
+}
+
+// Adds whatever the decoder recognised to a capture payload. value/address/
+// command and state[] share one union, so which half is real depends entirely
+// on hasACState() — reading the wrong one reads neighbouring bytes.
+//
+// The 64-bit value goes out as a hex string: JSON integers are only safe to
+// 2^53, and this payload passes through a browser on its way to being shown.
+static void addDecodeFields(JsonDocument &doc, const decode_results *r) {
+  doc["protocol"] = typeToString(r->decode_type);
+  doc["bits"] = r->bits;
+  if (r->decode_type == UNKNOWN) return;   // nothing else is meaningful
+  if (hasACState(r->decode_type)) {
+    doc["state"] = resultToHexidecimal(r);
+  } else {
+    char hex[24];
+    snprintf(hex, sizeof(hex), "0x%llX", (unsigned long long)r->value);
+    doc["value"] = hex;
   }
 }
 
@@ -569,6 +653,10 @@ static void pollLearn() {
   doc["ok"] = true;
   doc["freq_khz"] = 38;   // demodulating receivers hide the true carrier
   doc["len"] = rawLen;
+  // What the decoder made of it, when it made anything. Replaying a recognised
+  // protocol regenerates the frame to spec instead of echoing our capture, so
+  // it survives noise that raw replay would faithfully reproduce.
+  addDecodeFields(doc, &results);
   JsonArray arr = doc["raw"].to<JsonArray>();
   for (uint16_t i = 0; i < rawLen; i++) arr.add(raw[i]);
   if (!publishIrJson(doc)) {
@@ -657,6 +745,40 @@ static void handleOtaCommand(const uint8_t *payload, size_t len) {
 }
 
 #ifdef HAS_IR
+// Counts the keys of the top-level "slots" object without parsing the bundle
+// into a document -- it holds every code at once and would not fit in RAM.
+//
+// A character walk rather than a substring search. Searching for a literal like
+// "\":[" makes two assumptions the producer never promised: that it spaces its
+// JSON one particular way, and that slots are one particular shape. Both have
+// been wrong. This tracks string state and nesting depth instead, so it counts
+// the same whether the writer packs or spaces its output, and whether a slot is
+// an object (v2) or a bare timing array (v1).
+static int countSlots(const String &text) {
+  int at = text.indexOf("\"slots\"");
+  if (at < 0) return 0;
+  at = text.indexOf('{', at);
+  if (at < 0) return 0;
+
+  int depth = 0, n = 0;
+  bool inStr = false, esc = false, keyPending = false;
+  for (int i = at; i < (int)text.length(); i++) {
+    char c = text[i];
+    if (esc) { esc = false; continue; }
+    if (inStr && c == '\\') { esc = true; continue; }
+    if (c == '"') {
+      inStr = !inStr;
+      if (inStr && depth == 1) keyPending = true;   // a slot name
+      continue;
+    }
+    if (inStr) continue;
+    if (c == '{' || c == '[') { depth++; continue; }
+    if (c == '}' || c == ']') { if (--depth == 0) break; continue; }
+    if (c == ':' && depth == 1 && keyPending) { n++; keyPending = false; }
+  }
+  return n;
+}
+
 static void ackIrdata(bool ok, int slots, size_t bytes) {
   JsonDocument doc;
   doc["type"] = "irdata_ack";
@@ -741,7 +863,8 @@ static void performIrdata() {
     DeserializationError err =
         deserializeJson(doc, check, DeserializationOption::Filter(filter));
     check.close();
-    if (err != DeserializationError::Ok || (doc["v"] | 0) != 1 ||
+    int version = doc["v"] | 0;
+    if (err != DeserializationError::Ok || (version != 1 && version != 2) ||
         irdataModelId != (const char *)(doc["model_id"] | "")) {
       LOG.println("[irdata] bundle failed validation — keeping old config");
       SPIFFS.remove(IRDATA_PATH);
@@ -749,15 +872,10 @@ static void performIrdata() {
       led(CRGB::Green);
       return;
     }
-    // Count the learned combos for the ack without a full parse: inside the
-    // slots object every key is a quoted string directly followed by ":[",
-    // and the timing arrays themselves contain no quotes.
     check = SPIFFS.open(IRDATA_PATH, FILE_READ);
     String text = check.readString();
     check.close();
-    for (int i = text.indexOf("\"slots\"");
-         (i = text.indexOf("\":[", i + 1)) >= 0;)
-      slots++;
+    slots = countSlots(text);
   }
 
   prefs.begin("atomair", false);
@@ -1178,7 +1296,7 @@ void setup() {
                   mqttFromNvs ? "NVS" : "config.h default");
 
 #ifdef HAS_IR
-  irsendRaw.begin();
+  irsend.begin();
   if (!SPIFFS.begin(true))   // format on first mount so IRDATA can land later
     LOG.println("[boot] SPIFFS mount failed — learned IR replay unavailable");
   // Readiness is one question now: did a learned bundle survive the reboot?

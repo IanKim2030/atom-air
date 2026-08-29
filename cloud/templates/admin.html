@@ -952,7 +952,12 @@ function renderLearnGrid() {
     <div class="rounded-xl border ${code ? "border-emerald-500/30 bg-emerald-500/5" : "border-slate-700 bg-slate-900/40"} p-2.5 flex items-center justify-between gap-2">
       <div>
         <div class="text-xs font-bold ${code ? "text-emerald-300" : "text-slate-300"}">${slotLabel(slot)}</div>
-        <div class="text-[10px] text-slate-500">${code ? `${code.length} entries · ${fmtTime(code.captured_at)}` : "미학습"}</div>
+        <div class="text-[10px] text-slate-500">${code
+          ? `${code.protocol
+                ? `<span class="text-cyan-400 font-mono">${esc(code.protocol)}</span>`
+                : `<span class="text-slate-600" title="디코딩되지 않아 raw 타이밍으로 재생됩니다">RAW</span>`
+             } · ${code.length} entries · ${fmtTime(code.captured_at)}`
+          : "미학습"}</div>
       </div>
       <div class="flex gap-1 shrink-0">
         <button onclick="startLearn('${slot}')" ${busy ? "disabled" : ""}

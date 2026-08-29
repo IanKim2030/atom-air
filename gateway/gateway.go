@@ -582,6 +582,13 @@ func (s *Service) onIREvent(devID uint8, payload []byte) {
 		FreqKHz   int    `json:"freq_khz"`
 		Len       int    `json:"len"`
 		Raw       []int  `json:"raw"`
+		// What the device's decoder made of the frame, when it made anything.
+		// Passed through untouched: whether a protocol is usable is decided by
+		// the device that will replay it, not here.
+		Protocol string `json:"protocol"`
+		Bits     int    `json:"bits"`
+		Value    string `json:"value"`
+		State    string `json:"state"`
 		ModelID   string `json:"model_id"`
 		Slots     int    `json:"slots"`
 		Bytes     int64  `json:"bytes"`
@@ -597,9 +604,11 @@ func (s *Service) onIREvent(devID uint8, payload []byte) {
 			"session_id": evt.SessionID, "slot": evt.Slot,
 			"ok": evt.OK, "error": evt.Error,
 			"freq_khz": evt.FreqKHz, "len": evt.Len, "raw": evt.Raw,
+			"protocol": evt.Protocol, "bits": evt.Bits,
+			"value": evt.Value, "state": evt.State,
 		})
 		slog.Info("IR capture relayed", "dev", devID, "slot", evt.Slot,
-			"ok", evt.OK, "len", evt.Len)
+			"ok", evt.OK, "len", evt.Len, "protocol", evt.Protocol)
 	case "irdata_ack":
 		s.mu.Lock()
 		s.irdataAcks[devID] = irdataAck{modelID: evt.ModelID, ok: evt.OK, when: time.Now()}
