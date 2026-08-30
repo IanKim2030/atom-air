@@ -205,13 +205,14 @@ enum SensorKind { SENSOR_NONE, SENSOR_SHT3X, SENSOR_SHT4X,
                   SENSOR_DHT22, SENSOR_DHT11 };
 static SensorKind sensorKind = SENSOR_NONE;
 static Adafruit_SHT31 sht3x;
+static uint8_t sht3xAddr = 0x44;    // whichever of 0x44/0x45 answered
 static Adafruit_SHT4x sht4x;
 static DHT dht22(DHT_DATA_PIN, DHT22);
 static DHT dht11(DHT_DATA_PIN, DHT11);
 
 static const char *sensorName() {
   switch (sensorKind) {
-    case SENSOR_SHT3X: return "SHT3x (ENV III)";
+    case SENSOR_SHT3X: return sht3xAddr == 0x45 ? "SHT3x @0x45" : "SHT3x @0x44";
     case SENSOR_SHT4X: return "SHT4x (ENV IV)";
     case SENSOR_DHT22: return "DHT22";
     case SENSOR_DHT11: return "DHT11";
@@ -223,13 +224,17 @@ static bool plausible(float t) { return !isnan(t) && t > -40.0f && t < 85.0f; }
 
 static void detectSensor() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.beginTransmission(0x44);
-  if (Wire.endTransmission() == 0) {
-    if (sht3x.begin(0x44) && plausible(sht3x.readTemperature())) {
+  // 0x44 is the M5 ENV units and most breakouts; 0x45 is the same part with
+  // its ADDR pin tied high, which some bare SHT3x boards ship that way.
+  for (uint8_t addr : {(uint8_t)0x44, (uint8_t)0x45}) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) continue;
+    if (sht3x.begin(addr) && plausible(sht3x.readTemperature())) {
+      sht3xAddr = addr;
       sensorKind = SENSOR_SHT3X;
       return;
     }
-    if (sht4x.begin(&Wire)) {
+    if (addr == 0x44 && sht4x.begin(&Wire)) {   // SHT4x lives only at 0x44
       sensors_event_t h, t;
       if (sht4x.getEvent(&h, &t) && plausible(t.temperature)) {
         sensorKind = SENSOR_SHT4X;
@@ -950,6 +955,7 @@ static void performOta() {
 //   mqtt?                    show host / port / source / link state
 //   mqtt reset               drop the NVS address, back to config.h
 //   scan                     list the 2.4GHz APs this radio can actually see
+//   i2c?                     what is actually on the Grove I2C bus?
 //   ir?                      is a receiver wired to IR_RX_PIN? (atom_ac only)
 static String takeToken(String &line) {
   line.trim();
@@ -1018,6 +1024,69 @@ static void handleScan() {
 // otherwise invisible: a VS1838B/TSOP38238 drives its output HIGH while idle,
 // so it beats an internal pulldown. A floating pin does not. Then it listens
 // so a remote press proves the whole path, not just the DC level.
+// i2c? answers "is the sensor actually on the bus?", which boot detection cannot:
+// it only probes 0x44 and then reports none, so an ENV unit at a different
+// address and an unplugged cable look identical from the banner. Scanning the
+// whole range tells those two apart, and the idle levels catch the third case
+// -- a bus with no pull-ups because the unit is not powered.
+// One pass over the address range on a given pin pair. Returns how many
+// devices acknowledged, so the caller can retry with the pins swapped.
+static int scanBus(uint8_t sda, uint8_t scl, const char *label) {
+  Wire.begin(sda, scl);
+  delay(5);
+  int found = 0;
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) continue;
+    found++;
+    const char *known = "";
+    switch (addr) {
+      case 0x44: known = "  SHT3x/SHT4x -- what boot detection expects"; break;
+      case 0x45: known = "  SHT3x at its alternate address"; break;
+      case 0x76: case 0x77: known = "  BMP/BME-class part, not supported"; break;
+      case 0x38: known = "  AHT-class part, not supported"; break;
+      case 0x70: known = "  I2C hub/mux, not a sensor"; break;
+    }
+    LOG.printf("[i2c] %s: device at 0x%02X%s\n", label, addr, known);
+  }
+  return found;
+}
+
+static void handleI2cProbe() {
+  // Read against an internal PULLDOWN, not a pull-up: the sensor board carries
+  // its own 10k pull-ups to VCC, so a line that still reads HIGH here is being
+  // held up by a powered sensor. With an internal pull-up the line reads HIGH
+  // either way and the test says nothing.
+  pinMode(I2C_SDA_PIN, INPUT_PULLDOWN);
+  pinMode(I2C_SCL_PIN, INPUT_PULLDOWN);
+  delay(20);
+  int sda = 0, scl = 0;
+  for (int i = 0; i < 50; i++) {
+    sda += digitalRead(I2C_SDA_PIN);
+    scl += digitalRead(I2C_SCL_PIN);
+    delayMicroseconds(200);
+  }
+  LOG.printf("[i2c] SDA=G%d SCL=G%d  pulled up by the sensor: SDA=%d/50 SCL=%d/50%s\n",
+             I2C_SDA_PIN, I2C_SCL_PIN, sda, scl,
+             (sda > 45 && scl > 45)
+                 ? "  (both held high -- the board is powered and wired)"
+                 : "  <- should be 50/50; a low count means VCC or that line "
+                   "is not actually reaching the sensor");
+
+  int found = scanBus(I2C_SDA_PIN, I2C_SCL_PIN, "as wired");
+  if (found == 0) {
+    // Both lines pulled up but nobody answering is what crossed data and clock
+    // look like, so try it the other way round before blaming the sensor.
+    LOG.println("[i2c] nothing answered -- retrying with SDA/SCL swapped");
+    if (scanBus(I2C_SCL_PIN, I2C_SDA_PIN, "swapped") > 0)
+      LOG.printf("[i2c] the data and clock wires are crossed: SDA belongs on "
+                 "G%d and SCL on G%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+    else
+      LOG.println("[i2c] still nothing -- power reaches the board but the chip "
+                  "never ACKs; suspect the sensor or a broken signal wire");
+  }
+}
+
 static void handleIrProbe() {
   if (learnActive) {
     LOG.println("[ir] a learn session is running -- try again once it ends");
@@ -1150,6 +1219,11 @@ static void handleSerialLine(String line) {
 
   if (line == "scan") {
     handleScan();
+    return;
+  }
+
+  if (line == "i2c?") {
+    handleI2cProbe();
     return;
   }
 

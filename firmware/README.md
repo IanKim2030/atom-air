@@ -79,12 +79,15 @@ or a reflash. Type these into `pio device monitor`:
 
 | command | effect |
 |---|---|
-| `wifi <ssid> <password>` | save to NVS and reboot. Use `"quotes"` for values with spaces |
+| `wifi <ssid> [password]` | save to NVS and reboot. Use `"quotes"` for values with spaces; omit the password for an open network |
 | `wifi?` | print SSID, where it came from (NVS / config.h), link status and IP |
 | `wifi reset` | drop the NVS credentials and reboot onto the `config.h` defaults |
 | `mqtt <host> [port]` | save the store PC's LAN IP to NVS and reboot. Port defaults to 1883 |
 | `mqtt?` | print host, port, source (NVS / config.h) and broker link state |
 | `mqtt reset` | drop the NVS address and reboot onto the `config.h` default |
+| `scan` | list the 2.4GHz APs this radio can actually see |
+| `i2c?` | what is on the Grove I2C bus, and is the sensor even wired? |
+| `ir?` | is a receiver wired to `IR_RX_PIN`? (`atom_ac` only) |
 
 NVS wins over `config.h` whenever it holds a value. Both waits keep polling
 serial — a unit stuck on a wrong password, or pointed at a store PC that has
@@ -100,6 +103,33 @@ batch flash, pass them as build flags instead:
 PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=\"StoreNet\" -DWIFI_PASS=\"secret\" -DMQTT_HOST=\"192.168.0.20\"' \
   pio run -e atom_base -t upload
 ```
+
+### Diagnosing a sensor that never appears
+
+`[boot] sensor: none` is the same line whether the cable is unplugged, the unit
+sits at an address detection does not probe, or the chip is dead. `i2c?` takes
+those apart:
+
+```
+[i2c] SDA=G26 SCL=G32  pulled up by the sensor: SDA=50/50 SCL=50/50  (both held high)
+[i2c] as wired: device at 0x44  SHT3x/SHT4x -- what boot detection expects
+```
+
+The pull-up count is read against an *internal pulldown*, so a line that still
+reads high is being held there by a powered sensor's own pull-ups — that is what
+distinguishes "wired and powered" from "nothing attached". A count well below
+50 means VCC or that one wire is not reaching the board.
+
+Finding nothing on the bus then retries with SDA and SCL exchanged, because
+both lines pulled up with nobody answering is exactly what crossed data and
+clock look like. If the swapped pass also finds nothing while both lines are
+held high, power reaches the board but the chip never acknowledges — the
+pull-up resistors are passive and go on working with a dead sensor, so that
+combination points at the sensor rather than the wiring.
+
+Detection accepts an SHT3x at **0x44 or 0x45**; bare breakouts ship both ways
+depending on how their ADDR pin is tied. The boot banner names the address it
+found, e.g. `[boot] sensor: SHT3x @0x45`.
 
 ## Stage the AC image for SOTA
 
