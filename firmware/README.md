@@ -145,7 +145,7 @@ unit works exactly as well as a common one:
   Unlearned slots are skipped. Which path a send took is printed to the console,
   so the 디버깅 popup shows it: `[ir] decoded send: temp_up as NEC` or
   `[ir] raw send: temp_up (200 entries @ 38kHz)`.
-- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G25**, VCC→3V3,
+- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G33**, VCC→3V3,
   GND→GND) on the unit used for capture — transmit-only units need nothing.
   A `LEARN` command arms the receiver (LED purple); the next frame is published
   up with both its raw timings and whatever the decoder made of it, and the

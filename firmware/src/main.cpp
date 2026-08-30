@@ -609,8 +609,8 @@ static void pollMonitor() {
   if (!monitorActive) return;
   if ((int32_t)(millis() - monitorDeadline) >= 0) {
     if (monitorFrames == 0)
-      LOG.println("[monitor] 아무것도 수신되지 않았습니다 -- 수신기 연결(G25), "
-                  "리모컨 방향, 건전지를 확인하세요");
+      LOG.printf("[monitor] 아무것도 수신되지 않았습니다 -- 수신기 연결(G%d), "
+                  "리모컨 방향, 건전지를 확인하세요\n", IR_RX_PIN);
     stopMonitor();
     return;
   }
@@ -1090,16 +1090,18 @@ static void handleSerialLine(String line) {
   if (line.startsWith("wifi ")) {
     String rest = line.substring(5);
     String ssid = takeToken(rest);
+    // No password = an open network, which is what guest Wi-Fi usually is.
     String pass = takeToken(rest);
-    if (ssid.isEmpty() || pass.isEmpty()) {
-      LOG.println("[wifi] usage: wifi <ssid> <password>   (\"quotes\" for spaces)");
+    if (ssid.isEmpty()) {
+      LOG.println("[wifi] usage: wifi <ssid> [password]   (\"quotes\" for spaces)");
       return;
     }
     prefs.begin("atomair", false);
     prefs.putString("wifi_ssid", ssid);
     prefs.putString("wifi_pass", pass);
     prefs.end();
-    LOG.printf("[wifi] saved ssid=%s to NVS -- rebooting\n", ssid.c_str());
+    LOG.printf("[wifi] saved ssid=%s (%s) to NVS -- rebooting\n", ssid.c_str(),
+               pass.isEmpty() ? "open" : "WPA");
     delay(200);
     ESP.restart();
   }
@@ -1224,7 +1226,7 @@ static void ensureWifi() {
     // out of here is a `wifi <ssid> <password>` over serial, which saves to
     // NVS and reboots — so park, prompt, and keep the console responsive.
     for (;;) {
-      LOG.println("[wifi] not provisioned -- run: wifi <ssid> <password>");
+      LOG.println("[wifi] not provisioned -- run: wifi <ssid> [password]");
       for (int i = 0; i < 50; i++) {   // ~5 s between prompts
         pollSerial();
         delay(100);

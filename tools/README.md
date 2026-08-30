@@ -89,3 +89,41 @@ It behaves like real hardware in the ways that matter:
    downloads the image from the gateway's OTA server and comes back IR-capable;
    the gateway stops warning that the device has no IR firmware.
 5. Ctrl+C.
+
+## Driving one board by hand — `pc_remote.py`
+
+The dashboard is the product; this is the bench version of it. Four buttons —
+전원 ON/OFF and 온도 올림/내림 — sent straight to the broker the store PC already
+runs, so it needs no gateway, no cloud and no browser.
+
+```bash
+python tools/pc_remote.py              # interactive: o f + - s q
+python tools/pc_remote.py on           # one-shot, scriptable
+python tools/pc_remote.py on up up
+```
+
+It publishes the same 8-byte AC frame the dashboard does, to
+`atom/{store}/ac/{dev}`, and subscribes to the board's console mirror so a
+keypress gets an answer:
+
+```
+[remote] power=ON  temp=25  (5501010019004cee)
+  board| [ir] raw send: temp_up (59 entries @ 38kHz)
+```
+
+Silence after a keypress means the frame arrived but no learned slot matched;
+the board says which, and why, on that same line.
+
+Four functions and no more, because that is what the remote being learned has.
+Mode and fan slots are simply never asked for — if they were, the board would
+log them as unlearned and skip them.
+
+**Why it remembers a setpoint.** An AC frame carries full state, and the board
+fires the learned buttons for the *difference* against what it last applied. So
+"온도 올림" is the same frame with one more degree in it, and the PC has to know
+what it last asked for — that is `--state-file`. Without it every fresh process
+would think the setpoint is 24 again and send nothing. Powering off resets it,
+matching the firmware, which forgets its setpoint at the same moment.
+
+Point `--broker` at the store PC to drive a board from another machine; the
+default `127.0.0.1` assumes you are on the PC running Mosquitto.
