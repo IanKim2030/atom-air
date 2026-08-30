@@ -20,13 +20,9 @@
 // "temp_up", ...) to what was captured for it. Learning: a LEARN command arms
 // the receiver on IR_RX_PIN; the next frame goes up atom/{store}/ir/{dev}.
 //
-// Two ways to send one slot, tried in that order. If the decoder recognised the
-// remote, the frame is regenerated from protocol + value (or state bytes), so a
-// slightly noisy capture still transmits to spec. Otherwise the recorded
-// mark/space timings are replayed, which works for remotes no decoder knows --
-// most air conditioners -- at the cost of reproducing the capture as-is. There
-// is still no brand database: the protocol, when there is one, was learned from
-// the remote rather than looked up.
+// Four button captures are supported: power_on, power_off, temp_up and
+// temp_down. Their corrected mark/space timings are replayed as raw IR; decoded
+// protocol fields are retained only for diagnostics.
 //
 // The temperature/humidity sensor on the Grove port is auto-detected at boot:
 // M5 ENV III (SHT30) and ENV IV (SHT40) over I2C, or a bare DHT22/DHT11 on
@@ -329,48 +325,22 @@ static void buildSensorPacket(uint8_t out[SENSOR_SIZE]) {
 // has written a protocol driver for works exactly as well as a common one.
 #ifdef HAS_IR
 // ── raw replay (학습 리모컨) ────────────────────────────────────────────
-// One learned code per remote *button*. A command carries the state the user
-// wants, and this walks there from the state last applied: power, then mode,
-// then the temperature and fan steps needed to close the gap.
+// Four learned buttons are supported: power on/off and temperature up/down.
+// A command carries the requested power and temperature; temperature changes
+// replay one raw +/- capture per degree.
 //
 // That only holds for remotes that send a discrete command per button. A
 // remote that transmits its whole state on every press will re-send whatever
 // was captured instead of stepping -- visible the first time it is tested.
-static uint8_t appliedMode = 0, appliedTemp = 24, appliedFan = 0;
+static uint8_t appliedTemp = 24;
 static bool haveApplied = false;
 
-static int hexNibble(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-// "0x1A2B" or "1A2B" -> bytes. Returns how many were written.
-static uint16_t hexToBytes(const char *s, uint8_t *out, uint16_t maxBytes) {
-  if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
-  uint16_t n = 0;
-  while (s[0] && s[1] && n < maxBytes) {
-    int hi = hexNibble(s[0]), lo = hexNibble(s[1]);
-    if (hi < 0 || lo < 0) break;
-    out[n++] = (uint8_t)((hi << 4) | lo);
-    s += 2;
-  }
-  return n;
-}
-
-// Replays one slot from SPIFFS. The ArduinoJson filter keeps memory at ~one
-// code even though the file holds all nine.
+// Replays one slot from SPIFFS. The ArduinoJson filter keeps memory at one code
+// even though the file contains all four captures.
 //
-// Two ways to send, in order of preference. If the decoder recognised the
-// remote at learn time, regenerate the frame from protocol + value/state: the
-// library builds it to spec, so a capture with a little noise in it still
-// transmits cleanly. Otherwise replay the timings we recorded, which works for
-// remotes no decoder knows — most air conditioners — at the cost of echoing
-// whatever imperfections the capture had.
-//
-// v1 bundles stored each slot as a bare timing array; those still load, and
-// take the raw path because there is nothing else in them.
+// Always replay the recorded timings. Decoded fields remain useful diagnostics
+// but are deliberately not used to regenerate the signal. Both v1 bare arrays
+// and v2 objects containing `raw` are accepted.
 static bool sendSlot(const char *slot) {
   File f = SPIFFS.open(IRDATA_PATH, FILE_READ);
   if (!f) {
@@ -395,30 +365,6 @@ static bool sendSlot(const char *slot) {
   }
   const bool v1 = entry.is<JsonArray>();
   JsonArray arr = v1 ? entry.as<JsonArray>() : entry["raw"].as<JsonArray>();
-  const char *pname = v1 ? "" : (entry["p"] | "");
-
-  decode_type_t type = pname[0] ? strToDecodeType(pname) : UNKNOWN;
-  if (type != UNKNOWN) {
-    bool sent = false;
-    const char *hex = entry["v"] | "";
-    if (hasACState(type)) {
-      // Long frames live in a byte array; "v" holds them as hex.
-      static uint8_t state[kStateSizeMax];
-      uint16_t nbytes = hexToBytes(hex, state, sizeof(state));
-      if (nbytes) sent = irsend.send(type, state, nbytes);
-    } else {
-      uint16_t bits = entry["b"] | 0;
-      if (bits && hex[0])
-        sent = irsend.send(type, (uint64_t)strtoull(hex, nullptr, 16), bits);
-    }
-    if (sent) {
-      LOG.printf("[ir] decoded send: %s as %s\n", slot, pname);
-      delay(250);   // remotes need a gap or the AC drops the second frame
-      return true;
-    }
-    LOG.printf("[ir] %s: %s not sendable — falling back to raw\n", slot, pname);
-  }
-
   if (arr.isNull() || arr.size() < 20 || arr.size() > 1024) {
     LOG.printf("[ir] %s: no usable raw timings — skipped\n", slot);
     return false;
@@ -433,15 +379,6 @@ static bool sendSlot(const char *slot) {
   return true;
 }
 
-static const char *modeSlot(uint8_t mode) {
-  switch (mode) {                       // AC_MODES in common/protocol.py
-    case 0: return "mode_cool";
-    case 1: return "mode_heat";
-    case 2: return "mode_dry";
-    default: return nullptr;            // fan/auto have no learned button
-  }
-}
-
 // Steps one axis with its up/down button. Capped so a wrong remembered state
 // cannot turn one command into a hundred IR bursts.
 static int stepTo(int from, int to, const char *up, const char *down) {
@@ -454,36 +391,19 @@ static int stepTo(int from, int to, const char *up, const char *down) {
   return n;
 }
 
-static bool sendRawSlot(uint8_t power, uint8_t mode, uint8_t temp, uint8_t fan) {
-  if (!power) {
-    if (!sendSlot("power_off")) return false;
-    haveApplied = false;                // state is unknown again once it is off
-    return true;
-  }
-  bool sent = false;
+static bool sendRawSlot(uint8_t power, uint8_t temp) {
   if (!haveApplied) {
-    sent |= sendSlot("power_on");
-    // Nothing is known about where the AC actually sits, so drive both axes
-    // from one end: bottom out, then step up to the target.
-    appliedTemp = 18;
-    appliedFan = 0;
-    stepTo(30, 18, "temp_up", "temp_down");
-    stepTo(3, 0, "fan_up", "fan_down");
-    appliedMode = 255;                  // force the mode button below
-  }
-  const char *ms = modeSlot(mode);
-  if (ms != nullptr && mode != appliedMode) {
-    sent |= sendSlot(ms);
-    appliedMode = mode;
+    if (!sendSlot(power ? "power_on" : "power_off")) return false;
+    haveApplied = true;
+  } else if ((power != 0) != acOn) {
+    if (!sendSlot(power ? "power_on" : "power_off")) return false;
   }
   int t = constrain((int)temp, 16, 30);
-  if (stepTo(appliedTemp, t, "temp_up", "temp_down") > 0) sent = true;
+  int wanted = abs(t - appliedTemp);
+  int done = stepTo(appliedTemp, t, "temp_up", "temp_down");
+  if (done != wanted) return false;
   appliedTemp = t;
-  int fs = constrain((int)fan, 0, 3);
-  if (stepTo(appliedFan, fs, "fan_up", "fan_down") > 0) sent = true;
-  appliedFan = fs;
-  haveApplied = true;
-  return sent;
+  return true;  // a no-op target is also a successfully applied command
 }
 
 // Prints a captured frame as the numbers themselves, not just a count. Twelve
@@ -559,6 +479,11 @@ static void stopMonitor() {
   LOG.printf("[monitor] stopped -- %u frame(s) seen\n", monitorFrames);
 }
 
+static bool supportedLearnSlot(const String &slot) {
+  return slot == "power_on" || slot == "power_off" ||
+         slot == "temp_up" || slot == "temp_down";
+}
+
 static void handleLearnCommand(const uint8_t *payload, size_t len) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, len) != DeserializationError::Ok) {
@@ -598,6 +523,11 @@ static void handleLearnCommand(const uint8_t *payload, size_t len) {
   if (monitorActive) stopMonitor();   // a real capture outranks a look
   learnSessionId = (const char *)(doc["session_id"] | "");
   learnSlot = (const char *)(doc["slot"] | "");
+  if (!supportedLearnSlot(learnSlot)) {
+    LOG.printf("[learn] unsupported slot: %s\n", learnSlot.c_str());
+    publishCaptureError("unsupported_slot");
+    return;
+  }
   long timeoutS = doc["timeout_s"] | 30L;
   learnDeadline = millis() + (uint32_t)constrain(timeoutS, 5L, 120L) * 1000;
   irrecv.enableIRIn();
@@ -646,6 +576,12 @@ static void pollLearn() {
   }
   decode_results results;
   if (!irrecv.decode(&results)) return;
+  if (results.overflow) {
+    LOG.println("[learn] receive buffer overflow -- frame rejected");
+    publishCaptureError("overflow");
+    stopLearn();
+    return;
+  }
   uint16_t rawLen = getCorrectedRawLength(&results);
   if (rawLen < 20) {   // stray flicker, not an AC frame — keep listening
     irrecv.resume();
@@ -672,6 +608,7 @@ static void pollLearn() {
     LOG.printf("[learn] captured %s: %u entries — sent\n",
                   learnSlot.c_str(), rawLen);
   }
+  delete[] raw;
   stopLearn();
 }
 #endif
@@ -706,7 +643,7 @@ static void handleAcFrame(const uint8_t *d, size_t len) {
 
 #ifdef HAS_IR
   if (irReady) {
-    if (!sendRawSlot(power, mode, temp, fan)) return;   // nothing learned: skip
+    if (!sendRawSlot(power, temp)) return;   // nothing learned: skip
     acOn = power != 0;
     blinkAck(feedback);
     return;
@@ -1019,11 +956,6 @@ static void handleScan() {
     WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 }
 
-#ifdef HAS_IR
-// ir? answers "is the receiver actually wired to IR_RX_PIN?", which is
-// otherwise invisible: a VS1838B/TSOP38238 drives its output HIGH while idle,
-// so it beats an internal pulldown. A floating pin does not. Then it listens
-// so a remote press proves the whole path, not just the DC level.
 // i2c? answers "is the sensor actually on the bus?", which boot detection cannot:
 // it only probes 0x44 and then reports none, so an ENV unit at a different
 // address and an unplugged cable look identical from the banner. Scanning the
@@ -1050,6 +982,54 @@ static int scanBus(uint8_t sda, uint8_t scl, const char *label) {
     LOG.printf("[i2c] %s: device at 0x%02X%s\n", label, addr, known);
   }
   return found;
+}
+
+// An address-only probe (beginTransmission/endTransmission with no payload) is
+// what a bus scan sends, and a few parts answer a real command while ignoring
+// it. So ask an SHT3x the one question it must answer: read the status
+// register (0xF32D). Silence here too means the chip is genuinely not talking.
+// Everything above only checks that a line can READ high. A master has to be
+// able to pull it LOW to say anything, and a damaged GPIO that still reads fine
+// will never get an ACK out of a perfectly good sensor. Open-drain, so this is
+// exactly what I2C does: drive low, then release and let the sensor's pull-up
+// bring it back up.
+static void lineTest(uint8_t pin, const char *name) {
+  pinMode(pin, OUTPUT_OPEN_DRAIN);
+  digitalWrite(pin, LOW);
+  delay(2);
+  int low = digitalRead(pin);
+  digitalWrite(pin, HIGH);            // release to the external pull-up
+  delay(2);
+  int high = digitalRead(pin);
+  pinMode(pin, INPUT);
+  const char *verdict =
+      (low == 0 && high == 1) ? "  (healthy)"
+      : (low != 0)            ? "  <- CANNOT PULL LOW: this pin or its wire is the fault"
+                              : "  <- stuck low: shorted to GND, or no pull-up present";
+  LOG.printf("[i2c] %s(G%d) drive test: driven=%d released=%d%s\n",
+             name, pin, low, high, verdict);
+}
+
+static void probeSht3x(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  Wire.write(0xF3);
+  Wire.write(0x2D);
+  uint8_t err = Wire.endTransmission();
+  if (err != 0) {
+    LOG.printf("[i2c] 0x%02X: no ACK to a status-register read (err %u)\n",
+               addr, err);
+    return;
+  }
+  delay(2);
+  uint8_t got = Wire.requestFrom((int)addr, 3);
+  if (got != 3) {
+    LOG.printf("[i2c] 0x%02X: accepted the command but returned %u/3 bytes\n",
+               addr, got);
+    return;
+  }
+  uint8_t hi = Wire.read(), lo = Wire.read(), crc = Wire.read();
+  LOG.printf("[i2c] 0x%02X: SHT3x ALIVE -- status 0x%02X%02X crc 0x%02X\n",
+             addr, hi, lo, crc);
 }
 
 static void handleI2cProbe() {
@@ -1081,12 +1061,27 @@ static void handleI2cProbe() {
     if (scanBus(I2C_SCL_PIN, I2C_SDA_PIN, "swapped") > 0)
       LOG.printf("[i2c] the data and clock wires are crossed: SDA belongs on "
                  "G%d and SCL on G%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
-    else
-      LOG.println("[i2c] still nothing -- power reaches the board but the chip "
-                  "never ACKs; suspect the sensor or a broken signal wire");
+    else {
+      // Last resort: a slower clock in case of long wires, and a real command
+      // rather than a bare address probe.
+      lineTest(I2C_SDA_PIN, "SDA");
+      lineTest(I2C_SCL_PIN, "SCL");
+      LOG.println("[i2c] retrying at 50kHz with an actual SHT3x command");
+      Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+      Wire.setClock(50000);
+      probeSht3x(0x44);
+      probeSht3x(0x45);
+      LOG.println("[i2c] if both are silent, power reaches the board but the "
+                  "chip never answers -- suspect the sensor itself");
+    }
   }
 }
 
+#ifdef HAS_IR
+// ir? answers "is the receiver actually wired to IR_RX_PIN?", which is
+// otherwise invisible: a VS1838B/TSOP38238 drives its output HIGH while idle,
+// so it beats an internal pulldown. A floating pin does not. Then it listens
+// so a remote press proves the whole path, not just the DC level.
 static void handleIrProbe() {
   if (learnActive) {
     LOG.println("[ir] a learn session is running -- try again once it ends");

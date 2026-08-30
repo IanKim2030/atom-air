@@ -852,9 +852,7 @@ function stopSotaPoll() { if (S.sotaPoll) { clearInterval(S.sotaPoll); S.sotaPol
 // ── AC models tab (모델 등록 + 리모컨 학습) ──────────────────────────
 const SLOT_LABELS = {
   power_on: "전원 ON", power_off: "전원 OFF",
-  mode_cool: "냉방", mode_heat: "난방", mode_dry: "제습",
   temp_up: "온도 +", temp_down: "온도 −",
-  fan_up: "바람세기 +", fan_down: "바람세기 −",
 };
 function slotLabel(slot) { return SLOT_LABELS[slot] || slot; }
 

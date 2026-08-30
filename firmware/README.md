@@ -31,8 +31,8 @@ makes the gateway's SOTA `verify` stage pass.
 
 ## Hardware
 
-- **IR transmit**: built-in IR LED on GPIO 12 — no wiring needed. It is
-  low-power; mount the unit close to (or facing) the AC's receiver.
+- **IR transmit**: external transmitter module signal on GPIO 22. Power the
+  module as specified by its vendor and share GND with the ATOM Lite.
 - **Status LED** (built-in RGB): white=booting · red=no Wi-Fi ·
   yellow=no MQTT · green=running · blue=OTA flashing.
 - **Temp/humidity sensor — auto-detected at boot** on the Grove port
@@ -162,20 +162,14 @@ unit works exactly as well as a common one:
   device downloads
   `ir_<model_id>.json` from the gateway's :8080 server, streams it into SPIFFS
   (`/irdata.json`), validates the header, then stamps NVS and acks — no reboot.
-- An AC frame is mapped to button slots (`power_on`, `mode_cool`, `temp_up`, …)
-  and each is sent one of **two ways**, in this order:
-  1. **Decoded** — if the receiver recognised the remote at learn time, the
-     frame is rebuilt from protocol + value (or state bytes) with `send()`. The
-     library builds it to spec, so a capture with some noise in it still
-     transmits cleanly.
-  2. **Raw** — otherwise the recorded mark/space timings go out via
-     `sendRaw()`. This is what carries the remotes no decoder knows, which is
-     most air conditioners; the cost is that the capture is reproduced as-is.
+- An AC frame is mapped to four button slots: `power_on`, `power_off`,
+  `temp_up`, and `temp_down`.
+  The recorded mark/space timings always go out via `sendRaw()` so transmission
+  follows the learned signal rather than a regenerated decoded protocol.
 
   Unlearned slots are skipped. Which path a send took is printed to the console,
-  so the 디버깅 popup shows it: `[ir] decoded send: temp_up as NEC` or
-  `[ir] raw send: temp_up (200 entries @ 38kHz)`.
-- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G33**, VCC→3V3,
+  so the 디버깅 popup shows it: `[ir] raw send: temp_up (200 entries @ 38kHz)`.
+- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G21**, VCC→3V3,
   GND→GND) on the unit used for capture — transmit-only units need nothing.
   A `LEARN` command arms the receiver (LED purple); the next frame is published
   up with both its raw timings and whatever the decoder made of it, and the

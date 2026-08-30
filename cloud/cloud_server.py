@@ -944,20 +944,15 @@ def db_update_device(store_id: str, dev_id: int, patch: dict) -> dict | None:
 # AC model registry + learned IR codes
 # --------------------------------------------------------------------------
 
-# Every state combination a raw-mode device can express. An AC remote sends the
-# whole state per keypress, so each combination is one learned code ("slot").
-# One slot per remote *button*, not per state combination. An installer presses
-# nine buttons instead of stepping a remote through 27 settings, and the device
-# reaches a requested state by replaying the buttons that get it there.
+# The raw-mode device intentionally exposes only four learned remote buttons.
+# Power transitions replay one power slot; temperature transitions repeat the
+# matching +/- slot once per degree. Mode and fan commands are rejected.
 #
 # This assumes the remote sends a discrete command per button. Many AC remotes
 # instead transmit their whole state on every press -- on those, replaying the
 # "temp up" capture re-sends the temperature it was captured at rather than
 # incrementing, which the installer will see the first time they test it.
-IR_SLOTS = ["power_on", "power_off",
-            "mode_cool", "mode_heat", "mode_dry",
-            "temp_up", "temp_down",
-            "fan_up", "fan_down"]
+IR_SLOTS = ["power_on", "power_off", "temp_up", "temp_down"]
 # Capture sanity bounds; anything outside is a mis-read, not a remote.
 IR_PROTOCOL_MAX_LEN = 32
 IR_VALUE_HEX_MAX_LEN = 64          # 32 AC state bytes as hex, plus "0x"
@@ -971,16 +966,11 @@ RAW_PROTOCOL = "RAW"
 def slots_for_state(power: int, mode: str, temp: int) -> list[str]:
     """The buttons a device needs before it can express this state at all.
 
-    Only the unconditional ones: temp and fan are reached by repeating their
-    step buttons, and how many presses that takes depends on where the device
-    currently is, which only the device knows.
+    Temperature direction is transition-dependent and is checked separately.
     """
     if not power:
         return ["power_off"]
-    needed = ["power_on"]
-    if mode in ("cool", "heat", "dry"):
-        needed.append(f"mode_{mode}")
-    return needed
+    return ["power_on"]
 
 
 def _slugify_model_id(brand: str, name: str) -> str:
@@ -1137,6 +1127,7 @@ def db_ir_bundle(model_id: str) -> dict | None:
         rows = con.execute(
             "SELECT slot, freq_khz, raw_json, protocol, bits, value_hex"
             " FROM ir_codes WHERE model_id=? ORDER BY slot", (model_id,)).fetchall()
+    rows = [r for r in rows if r["slot"] in IR_SLOTS]
     if not rows:
         return None
     freqs = [r["freq_khz"] for r in rows]
@@ -2552,12 +2543,22 @@ async def apply_ac_control(hub: StoreHub, msg: dict,
         # refuse it here where the user can see why.
         device = hub.devices.get(dev_id) or {}
         if device.get("protocol") == RAW_PROTOCOL:
+            unsupported = [k for k in ("mode", "fan") if k in changed_fields]
+            if unsupported:
+                errors.append(
+                    f"디바이스 {dev_id}: 전원과 온도 +/- 기능만 지원합니다.")
+                continue
             model_id = device.get("model_id") or ""
             if model_id not in raw_slots_cache:
                 model = await asyncio.to_thread(db_ac_model, model_id) \
                     if model_id else None
                 raw_slots_cache[model_id] = set((model or {}).get("slots") or [])
             needed = slots_for_state(state["power"], state["mode"], state["temp"])
+            previous_temp = previous.get("temp")
+            previous_temp = 24 if previous_temp is None else int(previous_temp)
+            if "temp" in changed_fields and state["temp"] != previous_temp:
+                needed.append("temp_up" if state["temp"] > previous_temp
+                              else "temp_down")
             missing = [s for s in needed if s not in raw_slots_cache[model_id]]
             if missing:
                 errors.append(

@@ -46,13 +46,15 @@ except ImportError:
     sys.exit("paho-mqtt is required: pip install paho-mqtt")
 
 
-def slot_for_state(power: int, mode: str, temp: int) -> str | None:
-    """Mirror of the firmware's state->slot mapping for raw-mode devices."""
-    if not power:
-        return "off"
-    if mode not in ("cool", "heat"):
-        return None
-    return f"{mode}_{min(max(int(temp), 18), 30)}"
+def slots_for_transition(old_power: bool, old_temp: float,
+                         power: int, temp: int) -> list[str]:
+    """Mirror the four-button transition implemented by the firmware."""
+    slots: list[str] = []
+    if bool(power) != old_power:
+        slots.append("power_on" if power else "power_off")
+    delta = int(temp) - int(old_temp)
+    slots.extend(["temp_up" if delta > 0 else "temp_down"] * abs(delta))
+    return slots
 
 
 def ambient_light(now: datetime) -> float:
@@ -228,12 +230,14 @@ class FakeAtom:
         if not dev.ir_ready:
             note = "IR 미탑재 -- 무시했을 것"
         elif dev.protocol == "RAW":
-            slot = slot_for_state(cmd["power"], cmd["mode"], cmd["temp"])
-            if slot in dev.ir_slots:
-                note = f"raw 재생: {slot} ({dev.model_id})"
+            slots = slots_for_transition(dev.ac_on, dev.setpoint,
+                                         cmd["power"], cmd["temp"])
+            missing = [slot for slot in slots if slot not in dev.ir_slots]
+            if not missing:
+                note = f"raw 재생: {slots or ['no-op']} ({dev.model_id})"
             else:
                 # The real firmware would find no such slot in SPIFFS and skip.
-                note = f"미학습 조합 {slot!r} -- 무시했을 것"
+                note = f"미학습 버튼 {missing!r} -- 무시했을 것"
                 self._dev_log(dev.dev_id, f"AC  {payload.hex()}  [{note}]")
                 return
         else:

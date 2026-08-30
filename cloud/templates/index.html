@@ -958,9 +958,9 @@ function cardPanelHtml(d, panel) {
       <button onclick="remoteCmdFor(${d.dev_id}, {temp:'+'})" class="touch-btn py-1.5 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-white"><i data-lucide="plus" class="w-4 h-4 mx-auto"></i></button>
     </div>
     <div class="grid grid-cols-5 gap-1">
-      ${modeBtn("cool", "냉방", "bg-indigo-600/30 border border-indigo-500/40 text-indigo-200", "")}
+      ${modeBtn("cool", "냉방", "bg-indigo-600/30 border border-indigo-500/40 text-indigo-200", na)}
       ${modeBtn("auto", "자동", "bg-amber-600/20 border border-amber-500/30 text-amber-300", na)}
-      ${modeBtn("heat", "난방", "bg-rose-600/20 border border-rose-500/30 text-rose-300", "")}
+      ${modeBtn("heat", "난방", "bg-rose-600/20 border border-rose-500/30 text-rose-300", na)}
       ${modeBtn("dry", "제습", "bg-cyan-600/20 border border-cyan-500/30 text-cyan-300", na)}
       <button onclick="remoteCmdFor(${d.dev_id}, {mode:'cool',temp:18,fan:'high',power:1})" ${na}
               class="touch-btn py-1.5 rounded-lg text-[11px] font-bold bg-gradient-to-r from-indigo-600 to-cyan-500 text-white disabled:opacity-30 disabled:pointer-events-none">터보</button>
@@ -969,7 +969,7 @@ function cardPanelHtml(d, panel) {
       <span class="text-[10px] text-slate-400 block">바람 세기${raw ? ' <span class="text-slate-500">— 이 에어컨은 자동만 지원</span>' : ""}</span>
       <div class="grid grid-cols-4 gap-1 text-[10px] font-semibold">
         ${["auto","low","mid","high"].map((f) => `
-          <button onclick="remoteCmdFor(${d.dev_id}, {fan:'${f}'})" ${f !== "auto" ? na : ""}
+          <button onclick="remoteCmdFor(${d.dev_id}, {fan:'${f}'})" ${na}
                   class="touch-btn py-1 rounded-lg ${ac.fan === f ? "bg-cyan-500 text-slate-950" : "bg-slate-800 hover:bg-indigo-600 text-slate-200"} disabled:opacity-30 disabled:pointer-events-none">${FAN_LABEL[f].replace(/\(.+\)/, "")}</button>`).join("")}
       </div>
     </div>
@@ -1130,9 +1130,7 @@ function isRawDevice(d) { return d?.protocol === "RAW"; }
 
 const SLOT_LABELS = {
   power_on: "전원 ON", power_off: "전원 OFF",
-  mode_cool: "냉방", mode_heat: "난방", mode_dry: "제습",
   temp_up: "온도 +", temp_down: "온도 −",
-  fan_up: "바람세기 +", fan_down: "바람세기 −",
 };
 const SLOT_LABEL = (slot) => SLOT_LABELS[slot] || slot;
 
@@ -1154,9 +1152,7 @@ async function ensureRawCatalog() {
 // takes depends on where the device currently sits -- only it knows that.
 function rawSlotsFor(power, mode) {
   if (!power) return ["power_off"];
-  const needed = ["power_on"];
-  if (mode === "cool" || mode === "heat" || mode === "dry") needed.push(`mode_${mode}`);
-  return needed;
+  return ["power_on"];
 }
 
 // Returns a user-facing message when the command cannot be expressed by the
@@ -1173,10 +1169,10 @@ function rawBlockMessage(d, fields) {
     .filter((slot) => !slots.has(slot));
   if (missing.length)
     return `아직 학습되지 않은 버튼이 필요합니다 (${missing.map(SLOT_LABEL).join(", ")}).`;
+  if (fields.mode != null || fields.fan != null)
+    return "\uC774 \uC7A5\uCE58\uB294 \uC804\uC6D0\uACFC \uC628\uB3C4 +/- \uAE30\uB2A5\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.";
   if (fields.temp != null && !slots.has("temp_up") && !slots.has("temp_down"))
     return "온도 버튼이 학습되지 않았습니다.";
-  if (fields.fan != null && !slots.has("fan_up") && !slots.has("fan_down"))
-    return "바람세기 버튼이 학습되지 않았습니다.";
   return null;
 }
 
