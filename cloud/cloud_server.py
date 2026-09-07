@@ -1117,11 +1117,10 @@ def db_delete_ir_code(model_id: str, slot: str) -> bool:
 def db_ir_bundle(model_id: str) -> dict | None:
     """The deployable code bundle the device stores in SPIFFS.
 
-    v2 slots are objects: `p`/`b`/`v` carry the decode when there is one, `raw`
-    always carries the timings. The device prefers the decode and falls back to
-    raw, so a slot with no protocol is not a broken slot -- it is the ordinary
-    case for an air conditioner. Keys are short because this file sits in a
-    128KB SPIFFS partition alongside eight other codes.
+    v2 slots are objects: `p`/`b`/`v` carry diagnostic decode data when there is
+    one, `raw` always carries the timings, and `freq_khz` carries the selected
+    replay carrier for that slot. A slot with no decoded protocol is normal for
+    an air conditioner because the device deliberately replays raw timings.
     """
     with closing(_connect()) as con:
         rows = con.execute(
@@ -1133,7 +1132,8 @@ def db_ir_bundle(model_id: str) -> dict | None:
     freqs = [r["freq_khz"] for r in rows]
 
     def slot_entry(r) -> dict:
-        entry: dict = {"raw": json.loads(r["raw_json"])}
+        entry: dict = {"raw": json.loads(r["raw_json"]),
+                       "freq_khz": r["freq_khz"]}
         if r["protocol"] and r["protocol"] != "UNKNOWN" and r["value_hex"]:
             entry["p"] = r["protocol"]
             entry["v"] = r["value_hex"]
@@ -2347,6 +2347,9 @@ class LearnStartRequest(BaseModel):
     model_id: str = Field(..., min_length=1, max_length=64)
     slot: str = Field(..., min_length=1, max_length=16)
     timeout_s: int = Field(30, ge=5, le=120)
+    # Demodulating receivers cannot measure the original carrier. The selected
+    # value is metadata for replay, not a frequency reported by the receiver.
+    freq_khz: int = Field(38, ge=IR_FREQ_MIN_KHZ, le=IR_FREQ_MAX_KHZ)
 
 
 @app.post("/api/v1/admin/stores/{store_id}/learn")
@@ -2377,14 +2380,15 @@ async def admin_start_learn(store_id: str, req: LearnStartRequest,
     sent = await manager.to_gateway(hub, {
         "cmd": "LEARN_IR", "store_id": store_id, "target_id": req.dev_id,
         "session_id": session_id, "slot": req.slot,
-        "timeout_s": req.timeout_s, "ts": iso(utcnow())})
+        "timeout_s": req.timeout_s, "freq_khz": req.freq_khz,
+        "ts": iso(utcnow())})
     if not sent:
         raise HTTPException(status_code=409,
                             detail="게이트웨이 연결이 끊겼습니다. 다시 시도하세요.")
     hub.learn = {"session_id": session_id, "dev_id": req.dev_id,
                  "model_id": req.model_id, "slot": req.slot,
                  "status": "waiting", "started_at": iso(utcnow()),
-                 "timeout_s": req.timeout_s,
+                 "timeout_s": req.timeout_s, "freq_khz": req.freq_khz,
                  # device timeout + slack for the MQTT/WS hops
                  "deadline": time.time() + req.timeout_s + 5,
                  "actor_id": actor.get("id")}
@@ -2813,9 +2817,10 @@ async def handle_ir_capture(hub: StoreHub, msg: dict) -> None:
         learn["status"] = "failed"
         learn["error"] = "신호 값이 허용 범위를 벗어났습니다. 다시 시도하세요."
         return
-    freq = msg.get("freq_khz")
-    freq = int(freq) if isinstance(freq, (int, float)) \
-        and IR_FREQ_MIN_KHZ <= freq <= IR_FREQ_MAX_KHZ else 38
+    # The receiver cannot observe the carrier after demodulation. Use the
+    # operator-selected value bound to this learning session; the device echoes
+    # it only for diagnostics.
+    freq = int(learn.get("freq_khz") or 38)
 
     # The decode, when the device managed one. Deliberately not checked against
     # a protocol list here: whether a name is usable is decided by the device

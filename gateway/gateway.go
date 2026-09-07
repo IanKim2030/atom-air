@@ -512,6 +512,9 @@ func (s *Service) handleLearn(cmd Command, cancel bool) {
 	if cmd.TargetID > 0 && cmd.TargetID < 256 {
 		target = uint8(cmd.TargetID)
 	}
+	if cmd.FreqKHz < 30 || cmd.FreqKHz > 60 {
+		cmd.FreqKHz = 38 // backward compatibility with older cloud commands
+	}
 	action := "LEARN"
 	if cancel {
 		action = "LEARN_CANCEL"
@@ -525,6 +528,7 @@ func (s *Service) handleLearn(cmd Command, cancel bool) {
 	sent := s.mqtt.PublishLearn(target, map[string]any{
 		"cmd": action, "session_id": cmd.SessionID,
 		"slot": cmd.Slot, "timeout_s": cmd.TimeoutS,
+		"freq_khz": cmd.FreqKHz,
 	})
 	if cancel {
 		return // best-effort; the cloud has already marked the session canceled
@@ -564,7 +568,7 @@ func (s *Service) simulateCapture(cmd Command, target uint8) {
 	s.cloud.SendJSON(map[string]any{
 		"type": "ir_capture", "dev_id": target,
 		"session_id": cmd.SessionID, "slot": cmd.Slot,
-		"ok": true, "freq_khz": 38, "len": len(raw), "raw": raw,
+		"ok": true, "freq_khz": cmd.FreqKHz, "len": len(raw), "raw": raw,
 	})
 	slog.Info("[simulate] synthesized IR capture", "dev", target, "slot", cmd.Slot)
 }
@@ -589,9 +593,9 @@ func (s *Service) onIREvent(devID uint8, payload []byte) {
 		Bits     int    `json:"bits"`
 		Value    string `json:"value"`
 		State    string `json:"state"`
-		ModelID   string `json:"model_id"`
-		Slots     int    `json:"slots"`
-		Bytes     int64  `json:"bytes"`
+		ModelID  string `json:"model_id"`
+		Slots    int    `json:"slots"`
+		Bytes    int64  `json:"bytes"`
 	}
 	if err := json.Unmarshal(payload, &evt); err != nil {
 		slog.Warn("unparseable IR event", "dev", devID, "err", err)

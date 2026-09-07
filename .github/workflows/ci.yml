@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python and IR data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python sources
+        run: python -m compileall -q common cloud tools
+      - name: Test wire protocol
+        run: python -m unittest discover -s common -p "test_*.py" -v
+      - name: Test cloud and learned IR data
+        run: python -m unittest discover -s cloud -p "test_*.py" -v
+
+  gateway:
+    name: Go gateway
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gateway/go.mod
+          cache-dependency-path: gateway/go.sum
+      - name: Static analysis
+        run: go vet ./...
+      - name: Test with race detector
+        run: go test -race ./...
+
+  firmware:
+    name: ESP32 firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.1.19
+      - name: Build all firmware targets
+        working-directory: firmware
+        run: python -m platformio run -e atom_base -e atom_ac -e esp32dev_ir
+      - name: Verify OTA staging
+        working-directory: firmware
+        run: |
+          python stage_firmware.py --data-dir "$RUNNER_TEMP/atomair"
+          cmp .pio/build/atom_ac/firmware.bin "$RUNNER_TEMP/atomair/firmware/atom_ac.bin"
+      - name: Package firmware artifacts
+        run: |
+          mkdir -p firmware-artifacts
+          cp firmware/.pio/build/atom_base/firmware.bin firmware-artifacts/atom_base.bin
+          cp firmware/.pio/build/atom_ac/firmware.bin firmware-artifacts/atom_ac.bin
+          cp firmware/.pio/build/esp32dev_ir/firmware.bin firmware-artifacts/esp32dev_ir.bin
+          cd firmware-artifacts
+          sha256sum *.bin > SHA256SUMS
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: esp32-firmware-${{ github.sha }}
+          path: firmware-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

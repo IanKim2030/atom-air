@@ -39,13 +39,13 @@
 
 // ── pins (M5Stack ATOM Lite) ────────────────────────────────────────────
 #ifndef IR_TX_PIN
-#define IR_TX_PIN 22        // external IR transmitter module signal input
+#define IR_TX_PIN 12        // ATOM Lite built-in IR transmitter
 #endif
-// Optional IR receiver (VS1838B/TSOP38238: OUT->G21, VCC->3V3, GND->GND) for
+// Optional IR receiver (VS1838B/TSOP38238: OUT->G19, VCC->3V3, GND->GND) for
 // learning raw remote codes. Only devices used for 학습 need one attached;
-// G21 is a free bottom-header pin (Grove 26/32 is taken by the sensor).
+// G19 is a free bottom-header pin (Grove 26/32 is taken by the sensor).
 #ifndef IR_RX_PIN
-#define IR_RX_PIN 21
+#define IR_RX_PIN 19
 #endif
 #ifndef STATUS_LED_PIN
 #define STATUS_LED_PIN 27   // built-in SK6812 RGB LED

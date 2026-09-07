@@ -350,7 +350,8 @@ class FakeAtom:
             raw.append(rng.choice([450, 1300]))
         self.client.publish(f"{self.topic_ir}/{dev.dev_id}", json.dumps(
             {"type": "capture", "session_id": session_id, "slot": slot,
-             "ok": True, "freq_khz": 38, "len": len(raw), "raw": raw}), qos=1)
+             "ok": True, "freq_khz": int(cmd.get("freq_khz", 38)),
+             "len": len(raw), "raw": raw}), qos=1)
         self._dev_log(dev.dev_id, f"LEARN {slot} captured ({len(raw)} entries)")
 
     # -- main loop ---------------------------------------------------------

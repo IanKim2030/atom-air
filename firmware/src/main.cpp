@@ -159,6 +159,9 @@ static long irdataSize = -1;
 // Learn session, armed by a LEARN command.
 static bool learnActive = false;
 static uint32_t learnDeadline = 0;
+// A demodulating IR receiver preserves mark/space timings but removes the
+// carrier, so the operator supplies the replay carrier used for this capture.
+static uint16_t learnFreqKHz = 38;
 // IR monitor: the receiver armed with nowhere to store what it hears. Every
 // frame is printed and thrown away, which is what you want when the question is
 // "does this remote reach the unit, and what does it actually send?"
@@ -173,8 +176,12 @@ static const char IRDATA_PATH[] = "/irdata.json";
 // ── status LED ──────────────────────────────────────────────────────────
 // white=booting  red=no wifi  yellow=no mqtt  green=ok  blue=OTA flashing
 static void led(const CRGB &c) {
+#ifndef NO_STATUS_LED
   statusLed[0] = c;
   FastLED.show();
+#else
+  (void)c;
+#endif
 }
 
 // Remote-command feedback: one clear blink, then settle back to green-ok.
@@ -372,7 +379,11 @@ static bool sendSlot(const char *slot) {
   static uint16_t rawBuf[1024];
   uint16_t n = 0;
   for (JsonVariant v : arr) rawBuf[n++] = v.as<uint16_t>();
-  uint16_t freq = doc["freq_khz"] | 38;
+  // v2+ keeps the carrier beside each slot. The bundle-level value remains a
+  // fallback for bundles produced before per-slot carrier selection existed.
+  uint16_t freq = v1 ? (uint16_t)(doc["freq_khz"] | 38)
+                     : (uint16_t)(entry["freq_khz"] | (doc["freq_khz"] | 38));
+  freq = constrain(freq, (uint16_t)30, (uint16_t)60);
   irsend.sendRaw(rawBuf, n, freq);
   LOG.printf("[ir] raw send: %s (%u entries @ %ukHz)\n", slot, n, freq);
   delay(250);
@@ -529,13 +540,16 @@ static void handleLearnCommand(const uint8_t *payload, size_t len) {
     return;
   }
   long timeoutS = doc["timeout_s"] | 30L;
+  long requestedFreq = doc["freq_khz"] | 38L;
+  learnFreqKHz = (uint16_t)constrain(requestedFreq, 30L, 60L);
   learnDeadline = millis() + (uint32_t)constrain(timeoutS, 5L, 120L) * 1000;
   irrecv.enableIRIn();
   learnActive = true;
   FastLED.setBrightness(60);
   led(CRGB::Purple);   // "point the remote at me"
-  LOG.printf("[learn] armed for slot %s (session %s, %lds)\n",
-                learnSlot.c_str(), learnSessionId.c_str(), timeoutS);
+  LOG.printf("[learn] armed for slot %s (session %s, %lds, replay %ukHz)\n",
+                learnSlot.c_str(), learnSessionId.c_str(), timeoutS,
+                learnFreqKHz);
 }
 
 // Runs from loop() while the monitor window is open. Everything it hears is
@@ -593,7 +607,7 @@ static void pollLearn() {
   doc["session_id"] = learnSessionId;
   doc["slot"] = learnSlot;
   doc["ok"] = true;
-  doc["freq_khz"] = 38;   // demodulating receivers hide the true carrier
+  doc["freq_khz"] = learnFreqKHz;  // selected because RX hides the carrier
   doc["len"] = rawLen;
   // What the decoder made of it, when it made anything. Replaying a recognised
   // protocol regenerates the frame to spec instead of echoing our capture, so
@@ -1319,7 +1333,9 @@ static void ensureWifi() {
 // ── lifecycle ───────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
+#ifndef NO_STATUS_LED
   FastLED.addLeds<WS2812, STATUS_LED_PIN, GRB>(statusLed, 1);
+#endif
   FastLED.setBrightness(24);
   led(CRGB::White);
 

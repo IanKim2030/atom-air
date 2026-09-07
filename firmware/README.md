@@ -31,8 +31,21 @@ makes the gateway's SOTA `verify` stage pass.
 
 ## Hardware
 
-- **IR transmit**: external transmitter module signal on GPIO 22. Power the
-  module as specified by its vendor and share GND with the ATOM Lite.
+### HiGenis HG-ESP32-DEVKIT V4
+
+Use `pio run -e esp32dev_ir` for the ESP32-WROOM-32E development board.
+Upload with `pio run -e esp32dev_ir -t upload --upload-port COMx`.
+This target uses external IR TX on GPIO25, IR RX on GPIO19, and the existing
+sensor pins SDA=GPIO26 / SCL=GPIO32 (DHT data=GPIO26). It disables the ATOM RGB
+LED output. An IR transmitter may be left disconnected during sensor/RX tests.
+Provision Wi-Fi and MQTT over serial after the first upload, as described below.
+For OTA, use this target's `.pio/build/esp32dev_ir/firmware.bin`; the ATOM image
+and `stage_firmware.py` select ATOM-specific pins and must not be used here.
+
+### ATOM Lite
+
+- **IR transmit**: ATOM Lite built-in infrared LED on GPIO 12.
+  Point the built-in emitter toward the device being controlled.
 - **Status LED** (built-in RGB): white=booting · red=no Wi-Fi ·
   yellow=no MQTT · green=running · blue=OTA flashing.
 - **Temp/humidity sensor — auto-detected at boot** on the Grove port
@@ -165,11 +178,16 @@ unit works exactly as well as a common one:
 - An AC frame is mapped to four button slots: `power_on`, `power_off`,
   `temp_up`, and `temp_down`.
   The recorded mark/space timings always go out via `sendRaw()` so transmission
-  follows the learned signal rather than a regenerated decoded protocol.
+  follows the learned signal rather than a regenerated decoded protocol. The
+  admin chooses a 30–60kHz replay carrier while learning (38kHz by default),
+  and each slot keeps that value through DB storage, deployment and replay.
+  VS1838B/TSOP-style demodulating receivers cannot measure the original carrier;
+  if 38kHz does not operate the unit, use its specification or retry common
+  values such as 36, 40 or 56kHz.
 
   Unlearned slots are skipped. Which path a send took is printed to the console,
   so the 디버깅 popup shows it: `[ir] raw send: temp_up (200 entries @ 38kHz)`.
-- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G21**, VCC→3V3,
+- **Learning** needs an IR receiver (VS1838B/TSOP38238: OUT→**G19**, VCC→3V3,
   GND→GND) on the unit used for capture — transmit-only units need nothing.
   A `LEARN` command arms the receiver (LED purple); the next frame is published
   up with both its raw timings and whatever the decoder made of it, and the
@@ -180,7 +198,7 @@ unit works exactly as well as a common one:
 - The bundle is versioned. `v1` stored each slot as a bare timing array and
   still loads — those slots simply take the raw path, because there is nothing
   else in them. `v2` stores an object per slot: `p`/`b`/`v` for the decode when
-  there is one, `raw` always.
+  there is one, `raw` always, and `freq_khz` selects that slot's carrier.
 
 ## Console mirror (웹 디버깅 패널)
 

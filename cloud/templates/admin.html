@@ -489,6 +489,11 @@
       <div><label>학습 장비 (IR 수신기 부착)</label>
         <select id="learn-device"></select></div>
     </div>
+    <div>
+      <label>송신 반송파 주파수 (kHz)</label>
+      <input id="learn-frequency" type="number" min="30" max="60" step="1" value="38">
+      <p class="text-[10px] text-slate-500 mt-1">일반적인 에어컨은 38kHz입니다. 수신 모듈은 주파수를 자동 측정할 수 없으므로 동작하지 않으면 제품 사양에 맞춰 36·40·56kHz 등을 선택해 다시 학습하세요.</p>
+    </div>
     <p class="text-[11px] text-slate-500">버튼 슬롯의 <b>학습</b>을 누르고, 리모컨을 해당 상태로 맞춘 뒤 장비의 IR 수신기를 향해 버튼을 누르세요. 조합마다 한 번씩 학습합니다.</p>
     <div id="learn-status" class="hidden text-xs rounded-xl px-3 py-2.5"></div>
     <div id="learn-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
@@ -918,6 +923,8 @@ async function openLearnModal(modelId) {
     ? online.map((s) => `<option value="${esc(s.store_id)}">${esc(s.name || s.store_id)}</option>`).join("")
     : '<option value="">게이트웨이 온라인 매장 없음</option>';
   await Promise.all([loadLearnDevices(), reloadCodes()]);
+  const savedFreq = S.codes.find((c) => c.freq_khz)?.freq_khz;
+  $("learn-frequency").value = savedFreq || 38;
   showModal("learn-modal");
 }
 
@@ -954,7 +961,7 @@ function renderLearnGrid() {
           ? `${code.protocol
                 ? `<span class="text-cyan-400 font-mono">${esc(code.protocol)}</span>`
                 : `<span class="text-slate-600" title="디코딩되지 않아 raw 타이밍으로 재생됩니다">RAW</span>`
-             } · ${code.length} entries · ${fmtTime(code.captured_at)}`
+             } · ${code.freq_khz || 38}kHz · ${code.length} entries · ${fmtTime(code.captured_at)}`
           : "미학습"}</div>
       </div>
       <div class="flex gap-1 shrink-0">
@@ -982,15 +989,20 @@ function learnStatus(kind, text) {
 async function startLearn(slot) {
   const storeId = $("learn-store").value;
   const devId = Number($("learn-device").value);
+  const freqKHz = Number($("learn-frequency").value);
   if (!storeId || !devId) { learnStatus("err", "게이트웨이가 온라인인 매장과 장비를 선택하세요."); return; }
+  if (!Number.isInteger(freqKHz) || freqKHz < 30 || freqKHz > 60) {
+    learnStatus("err", "송신 주파수는 30~60kHz 정수로 입력하세요."); return;
+  }
   try {
     await api(`/api/v1/admin/stores/${encodeURIComponent(storeId)}/learn`, {
       method: "POST", body: JSON.stringify({
-        dev_id: devId, model_id: S.learnModel, slot, timeout_s: 30 }) });
+        dev_id: devId, model_id: S.learnModel, slot, timeout_s: 30,
+        freq_khz: freqKHz }) });
   } catch (err) { learnStatus("err", err.message); return; }
   S.learnBusySlot = slot;
   renderLearnGrid();
-  learnStatus("wait", `${slotLabel(slot)} — 리모컨을 장비의 IR 수신기를 향해 누르세요 (30초 안에)…`);
+  learnStatus("wait", `${slotLabel(slot)} — 리모컨을 장비의 IR 수신기에 향해 누르세요 (재생 ${freqKHz}kHz, 30초 안에)…`);
   stopLearnPoll();
   S.learnPoll = setInterval(async () => {
     let learn;
