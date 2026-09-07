@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#090d16">
+  <title>관리자 로그인 | Atom Air Admin</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {
+        colors: {
+          brand: { 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' },
+          appBg: '#090d16', cardBg: '#111827'
+        },
+        fontFamily: {
+          sans: ['Pretendard', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+          mono: ['JetBrains Mono', 'Consolas', 'monospace']
+        }
+      } }
+    }
+  </script>
+
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    body {
+      font-family: 'Pretendard', sans-serif;
+      background: radial-gradient(circle at 50% 10%, #1e1438 0%, #090d16 75%);
+      min-height: 100vh; color: #f1f5f9;
+    }
+    .glass-card {
+      background: rgba(17, 24, 39, 0.88);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+    }
+    .touch-btn { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
+    .touch-btn:active { transform: scale(0.97); }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4 selection:bg-purple-500 selection:text-white">
+
+  <div class="fixed top-1/4 left-1/4 w-96 h-96 bg-purple-600/15 rounded-full blur-3xl pointer-events-none -z-10"></div>
+  <div class="fixed bottom-1/4 right-1/4 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none -z-10"></div>
+
+  <div class="glass-card rounded-3xl max-w-md w-full p-7 md:p-8 space-y-6 relative overflow-hidden">
+
+    <div class="text-center space-y-2">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-brand-500 text-white shadow-xl shadow-purple-500/30 mb-2">
+        <i data-lucide="shield-check" class="w-8 h-8"></i>
+      </div>
+      <h1 class="text-2xl font-black tracking-tight text-white">Atom Air 본사 관제 포털</h1>
+      <div class="inline-block px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-mono text-[11px] font-bold">
+        ADMIN · /admin
+      </div>
+      <p class="text-xs text-slate-400">매장 등록 · 구독 관리 · 장비 업그레이드 콘솔입니다.</p>
+    </div>
+
+    <form id="loginForm" class="space-y-4" autocomplete="on">
+      <div class="space-y-1.5">
+        <label for="username" class="text-xs font-semibold text-slate-300 block">관리자 아이디</label>
+        <div class="relative">
+          <i data-lucide="user-check" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input type="text" id="username" name="username" required placeholder="아이디"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-purple-500 font-mono">
+        </div>
+      </div>
+
+      <div class="space-y-1.5">
+        <label for="password" class="text-xs font-semibold text-slate-300 block">비밀번호</label>
+        <div class="relative">
+          <i data-lucide="key-round" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input type="password" id="password" name="password" required placeholder="비밀번호"
+                 class="w-full bg-slate-900 border border-slate-700/80 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-purple-500">
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn"
+              class="touch-btn w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold rounded-2xl text-sm shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 mt-2 disabled:opacity-50">
+        <i data-lucide="shield-check" class="w-4 h-4"></i>
+        <span>관리자 콘솔 접속</span>
+      </button>
+
+      <p id="errorMsg" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2.5"></p>
+    </form>
+
+    <div class="text-center text-xs text-slate-400 pt-3 border-t border-slate-800/80">
+      매장 담당자이신가요?
+      <a href="/login" class="text-indigo-400 hover:underline font-semibold ml-1">매장 로그인으로 이동</a>
+    </div>
+
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => lucide.createIcons());
+
+    const form = document.getElementById('loginForm');
+    const errorMsg = document.getElementById('errorMsg');
+    const submitBtn = document.getElementById('submitBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMsg.classList.add('hidden');
+      submitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/auth/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value.trim(),
+            password: document.getElementById('password').value,
+          }),
+        });
+        if (res.ok) { location.href = '/admin'; return; }
+        const body = await res.json().catch(() => ({}));
+        errorMsg.textContent = body.detail || '로그인에 실패했습니다.';
+        errorMsg.classList.remove('hidden');
+      } catch (_) {
+        errorMsg.textContent = '서버에 연결할 수 없습니다.';
+        errorMsg.classList.remove('hidden');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

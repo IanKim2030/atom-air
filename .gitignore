@@ -1,0 +1,24 @@
+# runtime artefacts
+cloud/cloud.db*
+gateway/*.exe
+gateway/*.exe~
+
+# the gateway service writes its state to %ProgramData%\AtomAir, not the repo
+store_data.db*
+store_license_config.json
+logs/
+# ...but --data-dir pointed at the repo drops staged OTA images next to the
+# firmware sources, so keep those out by name — firmware/ itself is source.
+atom_ac_*.bin
+ir_*.json
+
+# PlatformIO build output
+firmware/.pio/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# mock stack state (tools/run_mock.py)
+.mockdata/

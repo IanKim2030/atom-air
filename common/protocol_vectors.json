@@ -1,0 +1,107 @@
+{
+  "_comment": "Cross-language conformance vectors for the Atom Air wire protocol. Generated from common/protocol.py. Both the Python cloud and the Go gateway assert against these, so the two implementations cannot drift.",
+  "sensor": [
+    {
+      "hex": "aa012a00290900143e03028a",
+      "dev_id": 1,
+      "seq": 42,
+      "temp": 23.45,
+      "hum": 51.2,
+      "light": 830,
+      "flags": 2,
+      "ac_on": false,
+      "ir_ready": true,
+      "fault": false
+    },
+    {
+      "hex": "aa020000dafdb80b0000003c",
+      "dev_id": 2,
+      "seq": 0,
+      "temp": -5.5,
+      "hum": 30.0,
+      "light": 0,
+      "flags": 0,
+      "ac_on": false,
+      "ir_ready": false,
+      "fault": false
+    },
+    {
+      "hex": "aa07ffff00000000ffff03ae",
+      "dev_id": 7,
+      "seq": 65535,
+      "temp": 0.0,
+      "hum": 0.0,
+      "light": 65535,
+      "flags": 3,
+      "ac_on": true,
+      "ir_ready": true,
+      "fault": false
+    },
+    {
+      "hex": "aaff0100230f0f27d2040482",
+      "dev_id": 255,
+      "seq": 1,
+      "temp": 38.75,
+      "hum": 99.99,
+      "light": 1234,
+      "flags": 4,
+      "ac_on": false,
+      "ir_ready": false,
+      "fault": true
+    },
+    {
+      "hex": "aa032c012b0aad1200020119",
+      "dev_id": 3,
+      "seq": 300,
+      "temp": 26.03,
+      "hum": 47.81,
+      "light": 512,
+      "flags": 1,
+      "ac_on": true,
+      "ir_ready": false,
+      "fault": false
+    }
+  ],
+  "ac": [
+    {
+      "hex": "5501010018034eee",
+      "target_id": 1,
+      "power": 1,
+      "mode": "cool",
+      "temp": 24,
+      "fan": "high"
+    },
+    {
+      "hex": "550100011e004bee",
+      "target_id": 1,
+      "power": 0,
+      "mode": "heat",
+      "temp": 30,
+      "fan": "auto"
+    },
+    {
+      "hex": "55020102100145ee",
+      "target_id": 2,
+      "power": 1,
+      "mode": "dry",
+      "temp": 16,
+      "fan": "low"
+    },
+    {
+      "hex": "5509010316024aee",
+      "target_id": 9,
+      "power": 1,
+      "mode": "fan",
+      "temp": 22,
+      "fan": "mid"
+    },
+    {
+      "hex": "5501010419034bee",
+      "target_id": 1,
+      "power": 1,
+      "mode": "auto",
+      "temp": 25,
+      "fan": "high"
+    }
+  ]
+}
