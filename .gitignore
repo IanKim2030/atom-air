@@ -2,6 +2,10 @@
 cloud/cloud.db*
 gateway/*.exe
 gateway/*.exe~
+pcagent/*.exe
+pcagent/*.exe~
+pcagent/pcagent
+pcagent/pcagent_config.json
 
 # the gateway service writes its state to %ProgramData%\AtomAir, not the repo
 store_data.db*

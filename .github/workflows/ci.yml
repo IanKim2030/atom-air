@@ -51,6 +51,23 @@ jobs:
       - name: Test with race detector
         run: go test -race ./...
 
+  pcagent:
+    name: Go PC agent
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pcagent
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pcagent/go.mod
+          cache-dependency-path: pcagent/go.sum
+      - name: Static analysis
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+
   firmware:
     name: ESP32 firmware
     runs-on: ubuntu-latest

@@ -22,16 +22,18 @@ type MQTTBridge struct {
 	client    mqtt.Client
 	connected atomic.Bool
 
-	topicSensor string
-	topicAC     string
-	topicOTA    string
-	topicLearn  string
-	topicIR     string
-	topicLog    string
+	topicSensor   string
+	topicAC       string
+	topicOTA      string
+	topicLearn    string
+	topicIR       string
+	topicLog      string
+	topicPCStatus string
 }
 
 func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
-	onIREvent func(uint8, []byte), onLog func(uint8, []byte)) *MQTTBridge {
+	onIREvent func(uint8, []byte), onLog func(uint8, []byte),
+	onPCStatus func(key string, on bool)) *MQTTBridge {
 	b := &MQTTBridge{
 		topicSensor: fmt.Sprintf("atom/%s/sensor", storeID),
 		topicAC:     fmt.Sprintf("atom/%s/ac", storeID),
@@ -39,6 +41,10 @@ func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
 		topicLearn:  fmt.Sprintf("atom/%s/learn", storeID),
 		topicIR:     fmt.Sprintf("atom/%s/ir", storeID),
 		topicLog:    fmt.Sprintf("atom/%s/log", storeID),
+		// Unscoped by store: one Mosquitto instance always belongs to exactly
+		// one store, so a pcagent (which knows nothing but the broker address)
+		// never needs to learn a store id just to report its own power state.
+		topicPCStatus: "atom/pcagent/status",
 	}
 
 	opts := mqtt.NewClientOptions().
@@ -77,6 +83,23 @@ func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
 	// Console mirrors are debug chatter: QoS 0 and no retry, because a line
 	// lost while the link flaps is not worth delaying a learn capture for.
 	logHandler := perDevice("device log", onLog)
+	// PC status is keyed by whatever identity the pcagent announces itself
+	// under (normally its MAC address) -- the gateway, not the agent, is what
+	// knows which room and pc_id that key belongs to (see room_config.json).
+	pcStatusHandler := func(_ mqtt.Client, msg mqtt.Message) {
+		parts := strings.Split(msg.Topic(), "/")
+		key := parts[len(parts)-1]
+		var status struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(msg.Payload(), &status); err != nil {
+			slog.Warn("unparseable pc status payload", "topic", msg.Topic(), "err", err)
+			return
+		}
+		if onPCStatus != nil {
+			onPCStatus(key, status.Status == "on")
+		}
+	}
 
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		b.connected.Store(true)
@@ -91,6 +114,10 @@ func NewMQTTBridge(host string, port int, storeID string, onFrame func([]byte),
 		}
 		if tok := c.Subscribe(b.topicLog+"/+", 0, logHandler); tok.Wait() && tok.Error() != nil {
 			slog.Error("MQTT device-log subscribe failed", "err", tok.Error())
+			return
+		}
+		if tok := c.Subscribe(b.topicPCStatus+"/+", 1, pcStatusHandler); tok.Wait() && tok.Error() != nil {
+			slog.Error("MQTT pc-status subscribe failed", "err", tok.Error())
 			return
 		}
 		slog.Info("MQTT connected", "broker", fmt.Sprintf("%s:%d", host, port),

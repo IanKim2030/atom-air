@@ -74,12 +74,18 @@ type Service struct {
 
 	ingest chan []byte
 
-	mu         sync.Mutex
-	rawBuffer  []RawRow
-	buckets    map[bucketKey]*minuteBucket
-	acState    protocol.ACCommand
-	irReady    map[uint8]bool
-	irdataAcks map[uint8]irdataAck // last IRDATA ack per device
+	rooms    *RoomConfig
+	pcStatus *PCStatusTracker
+
+	mu                  sync.Mutex
+	rawBuffer           []RawRow
+	buckets             map[bucketKey]*minuteBucket
+	acState             protocol.ACCommand
+	lastACCommand       map[uint8]protocol.ACCommand // last accepted command per device, for auto-off
+	acOnReported        map[uint8]bool               // device's own FlagACOn, last sensor packet
+	unassignedPCsWarned map[string]bool              // pcagent keys already warned about once
+	irReady             map[uint8]bool
+	irdataAcks          map[uint8]irdataAck // last IRDATA ack per device
 
 	liveStreaming atomic.Bool
 	licensed      atomic.Bool
@@ -98,14 +104,104 @@ type irdataAck struct {
 }
 
 func NewService(cfg Config) *Service {
-	return &Service{
-		cfg:        cfg,
-		ingest:     make(chan []byte, ingestBuffer),
-		buckets:    make(map[bucketKey]*minuteBucket),
-		irReady:    make(map[uint8]bool),
-		irdataAcks: make(map[uint8]irdataAck),
-		acState:    protocol.ACCommand{TargetID: 1, Power: 0, Mode: "cool", Temp: 24, Fan: "auto"},
+	rooms, err := LoadRoomConfig(cfg.RoomConfig)
+	if err != nil {
+		slog.Error("could not load room config; PC-off auto-shutdown disabled", "err", err)
+		rooms = &RoomConfig{Defaults: defaultAutoOff}
+	} else if len(rooms.Rooms) > 0 {
+		slog.Info("room config loaded", "path", cfg.RoomConfig, "rooms", len(rooms.Rooms))
 	}
+
+	s := &Service{
+		cfg:                 cfg,
+		ingest:              make(chan []byte, ingestBuffer),
+		buckets:             make(map[bucketKey]*minuteBucket),
+		irReady:             make(map[uint8]bool),
+		irdataAcks:          make(map[uint8]irdataAck),
+		acState:             protocol.ACCommand{TargetID: 1, Power: 0, Mode: "cool", Temp: 24, Fan: "auto"},
+		lastACCommand:       make(map[uint8]protocol.ACCommand),
+		acOnReported:        make(map[uint8]bool),
+		unassignedPCsWarned: make(map[string]bool),
+		rooms:               rooms,
+	}
+	s.pcStatus = NewPCStatusTracker(rooms, s)
+	return s
+}
+
+// onPCStatus is the MQTT callback for atom/pcagent/status/{key}: it resolves
+// the agent's self-reported identity (normally its MAC address) to a
+// room/pc_id via room_config.json, then hands the report to the debounce/
+// retry state machine. A key nobody has assigned yet is logged once and
+// otherwise ignored -- the fix is to add it to room_config.json, not to
+// reconfigure the agent.
+func (s *Service) onPCStatus(key string, on bool) {
+	roomID, pcID, ok := s.rooms.findByKey(key)
+	if !ok {
+		s.mu.Lock()
+		alreadyWarned := s.unassignedPCsWarned[key]
+		s.unassignedPCsWarned[key] = true
+		s.mu.Unlock()
+		if !alreadyWarned {
+			slog.Warn("pc status from an unassigned key; add it to room_config.json",
+				"key", key)
+		}
+		return
+	}
+	s.pcStatus.OnStatus(roomID, pcID, on)
+}
+
+// SendACOff implements RoomOffSender: it publishes a power-off frame for one
+// AC device, reusing that device's last known mode/temp/fan (IR remotes
+// generally ignore those fields once power is off, but sending something
+// valid keeps the frame consistent with a normal control command).
+func (s *Service) SendACOff(devID uint8) bool {
+	s.mu.Lock()
+	last, ok := s.lastACCommand[devID]
+	s.mu.Unlock()
+	mode, temp, fan := "cool", uint8(24), "auto"
+	if ok {
+		mode, temp, fan = last.Mode, last.Temp, last.Fan
+	}
+
+	packet, err := protocol.EncodeACPacket(devID, 0, mode, int(temp), fan)
+	if err != nil {
+		slog.Error("could not encode auto-off packet", "dev", devID, "err", err)
+		return false
+	}
+	if !s.mqtt.PublishAC(devID, packet) && !s.cfg.Simulate {
+		slog.Warn("auto-off publish failed; MQTT broker unavailable", "dev", devID)
+		return false
+	}
+
+	s.mu.Lock()
+	s.lastACCommand[devID] = protocol.ACCommand{TargetID: devID, Power: 0, Mode: mode, Temp: temp, Fan: fan}
+	s.mu.Unlock()
+	slog.Info("auto-off sent", "dev", devID)
+	return true
+}
+
+// ACOnReported implements RoomOffSender: it reports what the device's own
+// last sensor packet said about its AC state (FlagACOn), so a retry can stop
+// once the device confirms the IR command landed.
+func (s *Service) ACOnReported(devID uint8) (on bool, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	on, known = s.acOnReported[devID]
+	return on, known
+}
+
+// NotifyRoomEvent implements RoomOffSender: it logs the event locally and
+// forwards it to the cloud as a device_log line, so it shows up in the same
+// dashboard panel as any other device console output.
+func (s *Service) NotifyRoomEvent(devID uint8, line string) {
+	slog.Info("room auto-off event", "dev", devID, "msg", line)
+	if s.cloud == nil {
+		return
+	}
+	s.cloud.SendJSON(map[string]any{
+		"type": "device_log", "dev_id": devID,
+		"lines": []string{line}, "uptime_ms": 0,
+	})
 }
 
 // Run blocks until ctx is cancelled, then shuts everything down cleanly.
@@ -146,7 +242,7 @@ func (s *Service) Run(ctx context.Context) error {
 		slog.Info("MQTT disabled (--no-mqtt); no broker will be contacted")
 	} else {
 		s.mqtt = NewMQTTBridge(s.cfg.MQTTHost, s.cfg.MQTTPort, s.cfg.StoreID,
-			s.onFrame, s.onIREvent, s.onDeviceLog)
+			s.onFrame, s.onIREvent, s.onDeviceLog, s.onPCStatus)
 		s.mqtt.Start()
 		defer s.mqtt.Stop()
 	}
@@ -233,6 +329,7 @@ func (s *Service) loopIngest(ctx context.Context) {
 				if reading.IRReady {
 					s.irReady[reading.DevID] = true
 				}
+				s.acOnReported[reading.DevID] = reading.Flags&protocol.FlagACOn != 0
 				s.rawBuffer = append(s.rawBuffer, RawRow{
 					TS: now, DevID: reading.DevID, Seq: reading.Seq,
 					Temp: reading.Temp, Hum: reading.Hum,
@@ -680,6 +777,7 @@ func (s *Service) handleACControl(cmd Command) {
 
 	s.mu.Lock()
 	s.acState = decoded
+	s.lastACCommand[decoded.TargetID] = decoded
 	s.mu.Unlock()
 	s.ackAC(true, "IR 명령을 전송했습니다.", &decoded)
 }

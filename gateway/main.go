@@ -40,6 +40,7 @@ type Config struct {
 	DataDir         string
 	DBPath          string
 	LicenseConfig   string
+	RoomConfig      string
 	FirmwareDir     string
 	LogFile         string
 	LogLevel        string
@@ -97,6 +98,9 @@ func parseConfig(args []string) (Config, error) {
 	fs.StringVar(&c.DBPath, "db", "", "local SQLite path (default <data-dir>/store_data.db)")
 	fs.StringVar(&c.LicenseConfig, "license-config", "",
 		"licence cache path (default <data-dir>/store_license_config.json)")
+	fs.StringVar(&c.RoomConfig, "room-config", "",
+		"room/PC/AC map for auto-off (default <data-dir>/room_config.json; "+
+			"missing file disables the feature)")
 	fs.StringVar(&c.FirmwareDir, "firmware-dir", "",
 		"firmware directory (default <data-dir>/firmware)")
 	fs.StringVar(&c.LogFile, "log-file", "",
@@ -137,6 +141,7 @@ func parseConfig(args []string) (Config, error) {
 	c.DataDir = abs
 	c.DBPath = resolvePath(c.DBPath, c.DataDir, "store_data.db")
 	c.LicenseConfig = resolvePath(c.LicenseConfig, c.DataDir, "store_license_config.json")
+	c.RoomConfig = resolvePath(c.RoomConfig, c.DataDir, "room_config.json")
 	c.FirmwareDir = resolvePath(c.FirmwareDir, c.DataDir, "firmware")
 	if c.LogFile != "-" {
 		c.LogFile = resolvePath(c.LogFile, c.DataDir, filepath.Join("logs", "gateway.log"))
